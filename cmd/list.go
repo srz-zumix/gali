@@ -19,13 +19,18 @@ var (
 
 func NewListCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "list",
+		Use:   "list [calendarId]",
 		Short: "List upcoming events",
+		Args:  cobra.MaximumNArgs(1),
 		Run: func(cmd *cobra.Command, args []string) {
+			if len(args) > 0 {
+				calendarID = args[0]
+			} else {
+				calendarID = "primary"
+			}
 			listEvents()
 		},
 	}
-	cmd.Flags().StringVarP(&calendarID, "calendar", "c", "primary", "Calendar ID (default: primary)")
 	cmd.Flags().StringVar(&since, "since", "", "Start date (RFC3339 or YYYY-MM-DD)")
 	cmd.Flags().StringVar(&until, "until", "", "End date (RFC3339 or YYYY-MM-DD)")
 	cmd.Flags().StringVar(&format, "format", "", "Output format (json or empty for text)")
@@ -77,7 +82,7 @@ func listEvents() {
 			if date == "" {
 				date = item.Start.Date
 			}
-			fmt.Printf("%v: %v (%v)\n", item.Id, item.Summary, date)
+			fmt.Printf("%v: %v (%v)(%v)\n", item.Id, item.Summary, date, item.Status)
 		}
 	}
 }

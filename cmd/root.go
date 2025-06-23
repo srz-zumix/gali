@@ -22,4 +22,5 @@ func Execute() {
 
 func init() {
 	rootCmd.AddCommand(NewListCmd())
+	rootCmd.AddCommand(NewIntersectCmd())
 }
