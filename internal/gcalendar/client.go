@@ -14,14 +14,16 @@ import (
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+	admdir "google.golang.org/api/admin/directory/v1"
 	"google.golang.org/api/calendar/v3"
+	"google.golang.org/api/option"
 )
 
 func getClient(config *oauth2.Config) *http.Client {
 	usr, _ := user.Current()
 	tokenCacheDir := filepath.Join(usr.HomeDir, ".credentials")
 	os.MkdirAll(tokenCacheDir, 0700)
-	tokenCacheFile := filepath.Join(tokenCacheDir, "gcal_token.json")
+	tokenCacheFile := filepath.Join(tokenCacheDir, "gali_token.json")
 
 	tok, err := tokenFromFile(tokenCacheFile)
 	if err != nil {
@@ -92,19 +94,41 @@ func saveToken(path string, token *oauth2.Token) {
 	json.NewEncoder(f).Encode(token)
 }
 
-func GetCalendarService(scope ...string) (*calendar.Service, error) {
+func GetGaliScope() []string {
+	return []string{
+		calendar.CalendarReadonlyScope,
+		admdir.AdminDirectoryResourceCalendarReadonlyScope,
+	}
+}
+
+func GetCalendarService() (*calendar.Service, error) {
 	b, err := os.ReadFile("credentials.json")
 	if err != nil {
 		return nil, fmt.Errorf("unable to read client secret file: %w", err)
 	}
-	useScope := calendar.CalendarReadonlyScope
-	if len(scope) > 0 {
-		useScope = scope[0]
-	}
-	config, err := google.ConfigFromJSON(b, useScope)
+	useScope := GetGaliScope()
+	config, err := google.ConfigFromJSON(b, useScope...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse client secret file to config: %w", err)
 	}
 	client := getClient(config)
-	return calendar.New(client)
+	srv, err := calendar.NewService(context.Background(), option.WithHTTPClient(client))
+	if err != nil {
+		return nil, fmt.Errorf("unable to create Calendar service: %w", err)
+	}
+	return srv, nil
+}
+
+func GetAdminDirectoryService(scope ...string) (*admdir.Service, error) {
+	b, err := os.ReadFile("credentials.json")
+	if err != nil {
+		return nil, fmt.Errorf("unable to read client secret file: %w", err)
+	}
+	useScope := GetGaliScope()
+	config, err := google.ConfigFromJSON(b, useScope...)
+	if err != nil {
+		return nil, fmt.Errorf("unable to parse client secret file to config: %w", err)
+	}
+	client := getClient(config)
+	return admdir.NewService(context.Background(), option.WithHTTPClient(client))
 }

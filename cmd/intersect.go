@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gali/internal/gcalendar"
+	"github.com/srz-zumix/gali/internal/parser"
 	"google.golang.org/api/calendar/v3"
 )
 
@@ -35,24 +35,13 @@ func intersectEvents(calendarID1, calendarID2, since, until, format string) {
 		log.Fatalf("Unable to retrieve Calendar client: %v", err)
 	}
 
-	today := time.Now().Format("2006-01-02")
-	if since == "" {
-		since = today
-	}
-	if until == "" {
-		until = today
+	since, until, err = parser.ParseSinceUntil(since, until)
+	if err != nil {
+		log.Fatalf("Invalid date format: %v", err)
 	}
 
 	getEvents := func(calID string) map[string]*calendar.Event {
-		call := srv.Events.List(calID).ShowDeleted(false).SingleEvents(true).OrderBy("startTime").MaxResults(100)
-		if t, err := parseDate(since); err == nil {
-			call = call.TimeMin(t.Format(time.RFC3339))
-		}
-		if t, err := parseDate(until); err == nil {
-			untilTime := t.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
-			call = call.TimeMax(untilTime.Format(time.RFC3339))
-		}
-		events, err := call.Do()
+		events, err := gcalendar.ListEvents(srv, calID, since, until)
 		if err != nil {
 			log.Fatalf("Unable to retrieve events for %s: %v", calID, err)
 		}
