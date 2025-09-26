@@ -2,6 +2,7 @@ package render
 
 import (
 	"strings"
+	"time"
 
 	"google.golang.org/api/calendar/v3"
 )
@@ -9,6 +10,44 @@ import (
 type EventFieldGetter func(e *calendar.Event) string
 type EventFieldGetters struct {
 	Func map[string]EventFieldGetter
+}
+
+func getPeriod(e *calendar.Event) string {
+	if e.Start.DateTime == "" {
+		return ""
+	}
+	start := e.Start.DateTime
+	end := e.End.DateTime
+	// 時刻部分のみ抽出
+	parseTime := func(dt string) string {
+		t, err := time.Parse(time.RFC3339, dt)
+		if err == nil {
+			return t.Format("15:04")
+		}
+		if len(dt) >= 16 && dt[10] == 'T' {
+			return dt[11:16]
+		}
+		return ""
+	}
+	startHM := parseTime(start)
+	endHM := parseTime(end)
+	return startHM + "-" + endHM
+}
+
+func getDate(e *calendar.Event) string {
+	if e.Start.DateTime != "" {
+		return e.Start.DateTime[:10] // YYYY-MM-DD
+	}
+	return e.Start.Date
+}
+
+func getDateTime(e *calendar.Event) string {
+	period := getPeriod(e)
+	date := getDate(e)
+	if period == "" {
+		return date
+	}
+	return date + " " + period
 }
 
 func NewEventFieldGetters() *EventFieldGetters {
@@ -26,11 +65,14 @@ func NewEventFieldGetters() *EventFieldGetters {
 				}
 				return e.End.Date
 			},
+			"PERIOD": func(e *calendar.Event) string {
+				return getPeriod(e)
+			},
 			"DATE": func(e *calendar.Event) string {
-				if e.Start.DateTime != "" {
-					return e.Start.DateTime[:10] // YYYY-MM-DD
-				}
-				return e.Start.Date
+				return getDate(e)
+			},
+			"DATE_TIME": func(e *calendar.Event) string {
+				return getDateTime(e)
 			},
 			"SUMMARY": func(e *calendar.Event) string {
 				if e.Summary == "" {
@@ -71,5 +113,5 @@ func (r *Renderer) RenderEvents(events *calendar.Events, headers []string) {
 
 // 既存のRenderEventsはデフォルトヘッダーで呼び出す
 func (r *Renderer) RenderEventsDefault(events *calendar.Events) {
-	r.RenderEvents(events, []string{"Start", "End", "Summary"})
+	r.RenderEvents(events, []string{"DATE_TIME", "SUMMARY"})
 }

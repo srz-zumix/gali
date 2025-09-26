@@ -1,12 +1,11 @@
 package cmd
 
 import (
-	"encoding/json"
-	"fmt"
 	"log"
 
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gali/internal/gcalendar"
+	"github.com/srz-zumix/gali/internal/render"
 )
 
 func NewLsCmd() *cobra.Command {
@@ -27,20 +26,11 @@ func listCalendars(format string) {
 	if err != nil {
 		log.Fatalf("Unable to retrieve Calendar client: %v", err)
 	}
-	cl, err := srv.CalendarList.List().Do()
+	cl, err := gcalendar.ListCalendarList(srv)
 	if err != nil {
 		log.Fatalf("Unable to retrieve calendar list: %v", err)
 	}
-	if format == "json" {
-		b, err := json.MarshalIndent(cl, "", "  ")
-		if err != nil {
-			log.Fatalf("Failed to marshal calendar list to JSON: %v", err)
-		}
-		fmt.Println(string(b))
-		return
-	}
-	fmt.Println("Calendar List:")
-	for _, entry := range cl.Items {
-		fmt.Printf("%v: %v\n", entry.Id, entry.Summary)
-	}
+	renderer := render.NewRenderer()
+	renderer.SetExporter(render.GetExporter(format))
+	renderer.RenderCalendarListDefault(cl)
 }
