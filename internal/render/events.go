@@ -68,6 +68,9 @@ func NewEventFieldGetters() *EventFieldGetters {
 			"PERIOD": func(e *calendar.Event) string {
 				return getPeriod(e)
 			},
+			"TIME": func(e *calendar.Event) string {
+				return getPeriod(e)
+			},
 			"DATE": func(e *calendar.Event) string {
 				return getDate(e)
 			},

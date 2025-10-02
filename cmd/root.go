@@ -23,6 +23,6 @@ func Execute() {
 func init() {
 	rootCmd.AddCommand(NewEventsCmd())
 	rootCmd.AddCommand(NewIntersectCmd())
-	rootCmd.AddCommand(NewLsCmd())
+	rootCmd.AddCommand(NewListCmd())
 	rootCmd.AddCommand(NewResCmd())
 }

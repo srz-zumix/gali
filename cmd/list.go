@@ -8,11 +8,12 @@ import (
 	"github.com/srz-zumix/gali/internal/render"
 )
 
-func NewLsCmd() *cobra.Command {
+func NewListCmd() *cobra.Command {
 	var format string
 	cmd := &cobra.Command{
-		Use:   "ls",
-		Short: "List all calendars (calendarList)",
+		Use:     "list",
+		Short:   "List all calendars (calendarList)",
+		Aliases: []string{"ls"},
 		Run: func(cmd *cobra.Command, args []string) {
 			listCalendars(format)
 		},

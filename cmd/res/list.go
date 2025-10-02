@@ -12,8 +12,9 @@ func NewResListCmd() *cobra.Command {
 	var format string
 	var buildingId string
 	cmd := &cobra.Command{
-		Use:   "list",
-		Short: "List resources.calendars.list (Google Workspace Resource Calendars)",
+		Use:     "list",
+		Short:   "List resources.calendars.list (Google Workspace Resource Calendars)",
+		Aliases: []string{"ls"},
 		Run: func(cmd *cobra.Command, args []string) {
 			dsrv, err := gcalendar.GetAdminDirectoryService()
 			if err != nil {
