@@ -25,4 +25,5 @@ func init() {
 	rootCmd.AddCommand(NewIntersectCmd())
 	rootCmd.AddCommand(NewListCmd())
 	rootCmd.AddCommand(NewResCmd())
+	rootCmd.AddCommand(NewUnionCmd())
 }

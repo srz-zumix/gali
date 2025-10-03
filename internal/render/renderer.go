@@ -14,9 +14,10 @@ type Exporter interface {
 }
 
 type Renderer struct {
-	IO       *iostreams.IOStreams
-	exporter Exporter
-	Color    bool
+	IO           *iostreams.IOStreams
+	exporter     Exporter
+	Color        bool
+	ShowDeclined bool
 }
 
 type StringRenderer struct {
@@ -39,7 +40,8 @@ var ColorFlags = []string{
 
 func NewRenderer() *Renderer {
 	return &Renderer{
-		IO: iostreams.System(),
+		IO:           iostreams.System(),
+		ShowDeclined: false,
 	}
 }
 

@@ -10,14 +10,14 @@ import (
 	"google.golang.org/api/calendar/v3"
 )
 
-func NewIntersectCmd() *cobra.Command {
+func NewUnionCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "intersect <calendarId1> <calendarId2>",
+		Use:     "union <calendarId1> <calendarId2>",
 		Short:   "Show events with the same ID in two calendars",
-		Aliases: []string{"i"},
+		Aliases: []string{"u"},
 		Args:    cobra.MinimumNArgs(2),
 		Run: func(cmd *cobra.Command, args []string) {
-			intersectEvents(args...)
+			unionEvents(args...)
 		},
 	}
 	f := cmd.Flags()
@@ -30,7 +30,7 @@ func NewIntersectCmd() *cobra.Command {
 	return cmd
 }
 
-func intersectEvents(calendarIDs ...string) {
+func unionEvents(calendarIDs ...string) {
 	srv, err := gcalendar.GetCalendarService()
 	if err != nil {
 		log.Fatalf("Unable to retrieve Calendar client: %v", err)
@@ -43,15 +43,16 @@ func intersectEvents(calendarIDs ...string) {
 
 	calendars := gcalendar.GetIdMappedEvents(srv, since, until, calendarIDs...)
 
-	var intersect *calendar.Events = &calendar.Events{Items: []*calendar.Event{}}
-	for id, ev := range calendars[0] {
-		for _, cal := range calendars[1:] {
-			if _, ok := cal[id]; !ok {
-				goto NEXT
+	var union *calendar.Events = &calendar.Events{Items: []*calendar.Event{}}
+	var unionMap = map[string]any{}
+
+	for _, cal := range calendars {
+		for id, ev := range cal {
+			if _, ok := unionMap[id]; !ok {
+				union.Items = append(union.Items, ev)
+				unionMap[id] = nil
 			}
 		}
-		intersect.Items = append(intersect.Items, ev)
-	NEXT:
 	}
 
 	refEventMap, err := gcalendar.GetReferenceMappedEvents(srv, since, until, refIDs, refMyCals, building)
@@ -59,9 +60,9 @@ func intersectEvents(calendarIDs ...string) {
 		log.Fatalf("Unable to retrieve events from ref calendars: %v", err)
 	}
 
-	gcalendar.CompletePrivateEvents(intersect, refEventMap)
+	gcalendar.CompletePrivateEvents(union, refEventMap)
 
 	renderer := render.NewRenderer()
 	renderer.SetExporter(render.GetExporter(format))
-	renderer.RenderEventsDefault(intersect)
+	renderer.RenderEventsDefault(union)
 }

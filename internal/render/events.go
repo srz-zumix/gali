@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/srz-zumix/gali/internal/gcalendar"
 	"google.golang.org/api/calendar/v3"
 )
 
@@ -104,10 +105,17 @@ func (r *Renderer) RenderEvents(events *calendar.Events, headers []string) {
 	}
 	getter := NewEventFieldGetters()
 	table := r.newTableWriter(headers)
+	table.SetAutoWrapText(false)
 	for _, event := range events.Items {
+		if !r.ShowDeclined {
+			if gcalendar.GetSelfResponseStatus(event) == "declined" {
+				continue
+			}
+		}
 		row := make([]string, len(headers))
 		for i, header := range headers {
 			row[i] = getter.GetField(event, header)
+			row[i] = r.decorate(event, row[i])
 		}
 		table.Append(row)
 	}

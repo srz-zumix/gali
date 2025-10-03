@@ -16,18 +16,18 @@ func ListEvents(srv *calendar.Service, calendarID, since, until string) (*calend
 	return call.Do()
 }
 
-// GetRefEventMap gets a map of event ID to event from reference calendar IDs
-func GetRefEventMap(srv *calendar.Service, refIDs []string, since, until string) (map[string]*calendar.Event, error) {
-	refEventMap := map[string]*calendar.Event{}
-	for _, refID := range refIDs {
-		refEvents, err := ListEvents(srv, refID, since, until)
+// GetUnionMappedEvents gets a map of event ID to event from reference calendar IDs
+func GetUnionMappedEvents(srv *calendar.Service, calendarIDs []string, since, until string) (map[string]*calendar.Event, error) {
+	unionEvents := map[string]*calendar.Event{}
+	for _, id := range calendarIDs {
+		refEvents, err := ListEvents(srv, id, since, until)
 		if err == nil {
 			for _, item := range refEvents.Items {
-				refEventMap[item.Id] = item
+				unionEvents[item.Id] = item
 			}
 		}
 	}
-	return refEventMap, nil
+	return unionEvents, nil
 }
 
 // CompletePrivateEvents replaces private events in mainEvents with ref events if available
@@ -39,4 +39,15 @@ func CompletePrivateEvents(mainEvents *calendar.Events, refEventMap map[string]*
 			}
 		}
 	}
+}
+
+func GetSelfResponseStatus(event *calendar.Event) string {
+	if event.Attendees != nil {
+		for _, attendee := range event.Attendees {
+			if attendee.Self && attendee.ResponseStatus != "" {
+				return attendee.ResponseStatus
+			}
+		}
+	}
+	return ""
 }
