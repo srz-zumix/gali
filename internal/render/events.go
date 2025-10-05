@@ -1,6 +1,7 @@
 package render
 
 import (
+	"slices"
 	"strings"
 	"time"
 
@@ -54,6 +55,7 @@ func getDateTime(e *calendar.Event) string {
 func NewEventFieldGetters() *EventFieldGetters {
 	return &EventFieldGetters{
 		Func: map[string]EventFieldGetter{
+			"ID": func(e *calendar.Event) string { return e.Id },
 			"START": func(e *calendar.Event) string {
 				if e.Start.DateTime != "" {
 					return e.Start.DateTime
@@ -102,6 +104,11 @@ func (r *Renderer) RenderEvents(events *calendar.Events, headers []string) {
 	if r.exporter != nil {
 		r.exporter.Export(events)
 		return
+	}
+	if r.Debug {
+		if !slices.Contains(headers, "ID") {
+			headers = append([]string{"ID"}, headers...)
+		}
 	}
 	getter := NewEventFieldGetters()
 	table := r.newTableWriter(headers)

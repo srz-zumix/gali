@@ -35,3 +35,5 @@ gali
 gali.exe
 
 credentials.json
+tmp/
+.gemini/

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"log"
+	"sort"
 
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gali/internal/gcalendar"
@@ -27,6 +28,8 @@ func NewUnionCmd() *cobra.Command {
 	f.StringArrayVarP(&refIDs, "ref", "r", nil, "Reference calendar ID(s) for private event completion (can be specified multiple times)")
 	f.StringVar(&building, "building", "", "Building ID to fetch all resource emails as reference calendars")
 	f.BoolVarP(&refMyCals, "ref-mycals", "R", false, "Use all my calendars as reference for private event completion")
+	f.BoolVar(&debug, "debug", false, "Enable debug mode")
+	cmd.Flags().MarkHidden("debug")
 	return cmd
 }
 
@@ -55,6 +58,19 @@ func unionEvents(calendarIDs ...string) {
 		}
 	}
 
+	// Sort events by start time
+	sort.Slice(union.Items, func(i, j int) bool {
+		startI := union.Items[i].Start.DateTime
+		if startI == "" {
+			startI = union.Items[i].Start.Date
+		}
+		startJ := union.Items[j].Start.DateTime
+		if startJ == "" {
+			startJ = union.Items[j].Start.Date
+		}
+		return startI < startJ
+	})
+
 	refEventMap, err := gcalendar.GetReferenceMappedEvents(srv, since, until, refIDs, refMyCals, building)
 	if err != nil {
 		log.Fatalf("Unable to retrieve events from ref calendars: %v", err)
@@ -63,6 +79,7 @@ func unionEvents(calendarIDs ...string) {
 	gcalendar.CompletePrivateEvents(union, refEventMap)
 
 	renderer := render.NewRenderer()
+	renderer.Debug = debug
 	renderer.SetExporter(render.GetExporter(format))
 	renderer.RenderEventsDefault(union)
 }

@@ -9,4 +9,5 @@ var (
 	refIDs       []string
 	building     string
 	refMyCals    bool
+	debug        bool
 )

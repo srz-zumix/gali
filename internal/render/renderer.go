@@ -18,6 +18,7 @@ type Renderer struct {
 	exporter     Exporter
 	Color        bool
 	ShowDeclined bool
+	Debug        bool
 }
 
 type StringRenderer struct {
@@ -42,6 +43,7 @@ func NewRenderer() *Renderer {
 	return &Renderer{
 		IO:           iostreams.System(),
 		ShowDeclined: false,
+		Debug:        false,
 	}
 }
 

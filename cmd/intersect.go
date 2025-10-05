@@ -27,6 +27,8 @@ func NewIntersectCmd() *cobra.Command {
 	f.StringArrayVarP(&refIDs, "ref", "r", nil, "Reference calendar ID(s) for private event completion (can be specified multiple times)")
 	f.StringVar(&building, "building", "", "Building ID to fetch all resource emails as reference calendars")
 	f.BoolVarP(&refMyCals, "ref-mycals", "R", false, "Use all my calendars as reference for private event completion")
+	f.BoolVar(&debug, "debug", false, "Enable debug mode")
+	cmd.Flags().MarkHidden("debug")
 	return cmd
 }
 
@@ -62,6 +64,7 @@ func intersectEvents(calendarIDs ...string) {
 	gcalendar.CompletePrivateEvents(intersect, refEventMap)
 
 	renderer := render.NewRenderer()
+	renderer.Debug = debug
 	renderer.SetExporter(render.GetExporter(format))
 	renderer.RenderEventsDefault(intersect)
 }

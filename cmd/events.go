@@ -25,13 +25,16 @@ func NewEventsCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&since, "since", "", "Start date (RFC3339 or YYYY-MM-DD)")
-	cmd.Flags().StringVar(&until, "until", "", "End date (RFC3339 or YYYY-MM-DD)")
-	cmd.Flags().StringVar(&format, "format", "", "Output format (json or empty for text)")
-	cmd.Flags().BoolVarP(&showDeclined, "show-declined", "D", false, "Show declined events (yes or no)")
-	cmd.Flags().StringArrayVarP(&refIDs, "ref", "r", nil, "Reference calendar ID(s) for private event completion (can be specified multiple times)")
-	cmd.Flags().StringVar(&building, "building", "", "Building ID to fetch all resource emails as reference calendars")
-	cmd.Flags().BoolVarP(&refMyCals, "ref-mycals", "R", false, "Use all my calendars as reference for private event completion")
+	f := cmd.Flags()
+	f.StringVar(&since, "since", "", "Start date (RFC3339 or YYYY-MM-DD)")
+	f.StringVar(&until, "until", "", "End date (RFC3339 or YYYY-MM-DD)")
+	f.StringVar(&format, "format", "", "Output format (json or empty for text)")
+	f.BoolVarP(&showDeclined, "show-declined", "D", false, "Show declined events (yes or no)")
+	f.StringArrayVarP(&refIDs, "ref", "r", nil, "Reference calendar ID(s) for private event completion (can be specified multiple times)")
+	f.StringVar(&building, "building", "", "Building ID to fetch all resource emails as reference calendars")
+	f.BoolVarP(&refMyCals, "ref-mycals", "R", false, "Use all my calendars as reference for private event completion")
+	f.BoolVar(&debug, "debug", false, "Enable debug mode")
+	cmd.Flags().MarkHidden("debug")
 	return cmd
 }
 
@@ -57,6 +60,7 @@ func listEvents() {
 
 	gcalendar.CompletePrivateEvents(mainEvents, refEventMap)
 	renderer := render.NewRenderer()
+	renderer.Debug = debug
 	renderer.ShowDeclined = showDeclined
 	renderer.SetExporter(render.GetExporter(format))
 	renderer.RenderEventsDefault(mainEvents)
