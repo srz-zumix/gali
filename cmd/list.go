@@ -18,7 +18,8 @@ func NewListCmd() *cobra.Command {
 			listCalendars(format)
 		},
 	}
-	cmd.Flags().StringVar(&format, "format", "", "Output format (json or empty for text)")
+	f := cmd.Flags()
+	f.StringVar(&format, "format", "", "Output format (json or empty for text)")
 	return cmd
 }
 

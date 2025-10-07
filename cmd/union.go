@@ -28,8 +28,7 @@ func NewUnionCmd() *cobra.Command {
 	f.StringArrayVarP(&refIDs, "ref", "r", nil, "Reference calendar ID(s) for private event completion (can be specified multiple times)")
 	f.StringVar(&building, "building", "", "Building ID to fetch all resource emails as reference calendars")
 	f.BoolVarP(&refMyCals, "ref-mycals", "R", false, "Use all my calendars as reference for private event completion")
-	f.BoolVar(&debug, "debug", false, "Enable debug mode")
-	cmd.Flags().MarkHidden("debug")
+	AddDebugFlag(cmd)
 	return cmd
 }
 
