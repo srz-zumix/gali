@@ -22,11 +22,11 @@ import (
 func getClient(config *oauth2.Config) *http.Client {
 	usr, _ := user.Current()
 	tokenCacheDir := filepath.Join(usr.HomeDir, ".credentials")
-	os.MkdirAll(tokenCacheDir, 0700)
 	tokenCacheFile := filepath.Join(tokenCacheDir, "gali_token.json")
 
 	tok, err := tokenFromFile(tokenCacheFile)
 	if err != nil {
+		os.MkdirAll(tokenCacheDir, 0700) // nolint:errcheck
 		tok = getTokenFromWeb(config)
 		saveToken(tokenCacheFile, tok)
 	}
@@ -38,7 +38,7 @@ func getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
 	if err != nil {
 		log.Fatalf("Unable to start local server: %v", err)
 	}
-	defer ln.Close()
+	defer ln.Close() // nolint:errcheck
 	redirectURL := fmt.Sprintf("http://%s", ln.Addr().String())
 	config.RedirectURL = redirectURL
 
@@ -58,7 +58,7 @@ func getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
 		q := req.URL.Query()
 		code := q.Get("code")
 		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n認証が完了しました。ウィンドウを閉じてください。")
-		conn.Close()
+		conn.Close() // nolint:errcheck
 		codeCh <- code
 	}()
 
