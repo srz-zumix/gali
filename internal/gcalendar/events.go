@@ -35,6 +35,17 @@ func CompletePrivateEvents(mainEvents *calendar.Events, refEventMap map[string]*
 	for i, item := range mainEvents.Items {
 		if item.Visibility == "private" {
 			if ref, ok := refEventMap[item.Id]; ok {
+				if ref.Attendees != nil {
+					for _, attendee := range ref.Attendees {
+						if attendee.Self {
+							attendee.Self = false
+						} else {
+							if attendee.Email == mainEvents.Summary {
+								attendee.Self = true
+							}
+						}
+					}
+				}
 				mainEvents.Items[i] = ref
 			}
 		}
