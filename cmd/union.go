@@ -45,7 +45,7 @@ func unionEvents(calendarIDs ...string) {
 
 	calendars := gcalendar.GetIdMappedEvents(srv, since, until, calendarIDs...)
 
-	var union *calendar.Events = &calendar.Events{Items: []*calendar.Event{}}
+	var union = &calendar.Events{Items: []*calendar.Event{}}
 	var unionMap = map[string]any{}
 
 	for _, cal := range calendars {

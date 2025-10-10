@@ -67,6 +67,11 @@ func getTokenFromWeb(config *oauth2.Config) (*oauth2.Token, error) {
 			errCh <- fmt.Errorf("unable to accept connection: %w", err)
 			return
 		}
+		defer func() {
+			if closeErr := conn.Close(); closeErr != nil {
+				log.Printf("Warning: failed to close connection: %v", closeErr)
+			}
+		}()
 		req, err := http.ReadRequest(bufio.NewReader(conn))
 		if err != nil {
 			errCh <- fmt.Errorf("unable to read request: %w", err)
@@ -74,9 +79,10 @@ func getTokenFromWeb(config *oauth2.Config) (*oauth2.Token, error) {
 		}
 		q := req.URL.Query()
 		code := q.Get("code")
-		fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\nAuthentication complete. You may close this window.")
-		if closeErr := conn.Close(); closeErr != nil {
-			log.Printf("Warning: failed to close connection: %v", closeErr)
+		_, err = fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\nAuthentication complete. You may close this window.")
+		if err != nil {
+			errCh <- fmt.Errorf("unable to write response: %w", err)
+			return
 		}
 		codeCh <- code
 	}()
@@ -101,7 +107,11 @@ func tokenFromFile(file string) (*oauth2.Token, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			log.Printf("Warning: failed to close file: %v", closeErr)
+		}
+	}()
 	tok := &oauth2.Token{}
 	err = json.NewDecoder(f).Decode(tok)
 	return tok, err
