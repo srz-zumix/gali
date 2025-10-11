@@ -44,7 +44,7 @@ func intersectEvents(calendarIDs ...string) {
 
 	calendars := gcalendar.GetIdMappedEvents(srv, since, until, calendarIDs...)
 
-	var intersect *calendar.Events = &calendar.Events{Items: []*calendar.Event{}}
+	var intersect = &calendar.Events{Items: []*calendar.Event{}}
 	for id, ev := range calendars[0] {
 		for _, cal := range calendars[1:] {
 			if _, ok := cal[id]; !ok {
