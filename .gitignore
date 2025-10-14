@@ -37,3 +37,5 @@ gali.exe
 credentials.json
 tmp/
 .gemini/
+# Added by goreleaser init:
+dist/
