@@ -24,15 +24,28 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.ref || github.ref }}
       GH_TOKEN: ${{ github.token }}
+    environment:
+      name: homebrew-tap
     steps:
+      - uses: suzuki-shunsuke/github-token-action@350d7506222e3a0016491abe85b5c4dd475b67d1 # v0.2.1
+        id: generate
+        with:
+          github_token: ${{ secrets.GH_TOKEN }}
+          github_app_id: ${{ secrets.APP_ID }}
+          github_app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
+          default_github_token: ${{ github.token }}
+
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
           version: '~> v2'
           args: release --clean --draft
+        env:
+          APP_TOKEN: ${{ steps.generate.outputs.token }}
       - name: Publish
         if: inputs.publish
         run: gh release edit --draft=false "${RELEASE_TAG}"

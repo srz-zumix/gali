@@ -40,3 +40,9 @@ archives:
 
 release:
   use_existing_draft: true
+
+brews:
+  - repository:
+      owner: srz-zumix
+      name: homebrew-tap
+      token: "{{ .Env.APP_TOKEN }}"
