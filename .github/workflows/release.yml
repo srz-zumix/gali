@@ -34,6 +34,10 @@ jobs:
           github_app_id: ${{ secrets.APP_ID }}
           github_app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
           default_github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_app_permissions: >-
+            {
+              "contents": "write"
+            }
 
       - uses: actions/checkout@v5
         with:
