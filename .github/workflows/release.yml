@@ -45,6 +45,10 @@ jobs:
         with:
           go-version: stable
 
+      - name: Create tag
+        run: |
+          git tag "${GORELEASER_CURRENT_TAG}" 2>/dev/null || true
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
         with:
