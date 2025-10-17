@@ -33,7 +33,7 @@ jobs:
           github_token: ${{ secrets.GH_TOKEN }}
           github_app_id: ${{ secrets.APP_ID }}
           github_app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
-          default_github_token: ${{ github.token }}
+          default_github_token: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/checkout@v5
         with:
@@ -45,6 +45,7 @@ jobs:
           version: '~> v2'
           args: release --clean --draft
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APP_TOKEN: ${{ steps.generate.outputs.token }}
       - name: Publish
         if: inputs.publish
