@@ -41,6 +41,9 @@ archives:
 release:
   use_existing_draft: true
 
+changelog:
+  disable: true  
+
 brews:
   - repository:
       owner: srz-zumix
