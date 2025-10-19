@@ -40,7 +40,7 @@ archives:
 
 release:
   use_existing_draft: true
-  target_commitish: '{{ .Commit }}'
+  replace_existing_artifacts: true
 
 changelog:
   disable: true  
