@@ -38,6 +38,10 @@ jobs:
             {
               "contents": "write"
             }
+          github_app_repositories: >-
+            [
+              "srz-zumix/homebrew-tap"
+            ]
 
       - uses: actions/checkout@v5
         with:
