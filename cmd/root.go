@@ -5,12 +5,14 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/srz-zumix/gali/version"
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "gali",
-	Short: "Google Calendar CLI",
-	Long:  `Google Calendar CLI using Google Calendar API`,
+	Use:     "gali",
+	Short:   "Google Calendar CLI",
+	Long:    `Google Calendar CLI using Google Calendar API`,
+	Version: version.Version,
 }
 
 func Execute() {
