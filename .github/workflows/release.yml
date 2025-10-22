@@ -27,19 +27,14 @@ jobs:
     environment:
       name: homebrew-tap
     steps:
-      - uses: suzuki-shunsuke/github-token-action@350d7506222e3a0016491abe85b5c4dd475b67d1 # v0.2.1
+      - uses: actions/create-github-app-token@v2
         id: generate
         with:
-          github_app_id: ${{ secrets.APP_ID }}
-          github_app_private_key: ${{ secrets.APP_PRIVATE_KEY }}
-          github_app_permissions: >-
-            {
-              "contents": "write"
-            }
-          github_app_repositories: >-
-            [
-              "srz-zumix/homebrew-tap"
-            ]
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+          repositories: |
+            homebrew-tap
 
       - uses: actions/checkout@v5
         with:
