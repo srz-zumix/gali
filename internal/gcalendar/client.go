@@ -134,6 +134,34 @@ func saveToken(path string, token *oauth2.Token) error {
 	return nil
 }
 
+// getGoogleConfig attempts to load Google API configuration,
+// first from credentials.json, and if not found, then from environment variables.
+func getGoogleConfig(scopes []string) (*oauth2.Config, error) {
+	// Try to read from credentials.json first
+	credentialsFile := os.Getenv("GALI_OAUTH_CREDENTIALS_JSON")
+	if credentialsFile == "" {
+		credentialsFile = "credentials.json"
+	}
+
+	b, err := os.ReadFile(credentialsFile)
+	if err == nil {
+		config, parseErr := google.ConfigFromJSON(b, scopes...)
+		if parseErr != nil {
+			return nil, fmt.Errorf("unable to parse credentials.json: %w", parseErr)
+		}
+		return config, nil
+	}
+
+	// If credentials.json not found, try environment variables
+	if os.IsNotExist(err) {
+		// Neither credentials.json nor environment variables are set.
+		return nil, nil // Signal to fallback to ADC
+	}
+
+	// Other error reading credentials.json
+	return nil, fmt.Errorf("unable to read %v: %w", credentialsFile, err)
+}
+
 func GetGaliScope() []string {
 	return []string{
 		calendar.CalendarReadonlyScope,
@@ -142,20 +170,26 @@ func GetGaliScope() []string {
 }
 
 func GetCalendarService() (*calendar.Service, error) {
-	b, err := os.ReadFile("credentials.json")
-	if err != nil {
-		return nil, fmt.Errorf("unable to read client secret file: %w", err)
-	}
 	useScope := GetGaliScope()
-	config, err := google.ConfigFromJSON(b, useScope...)
+	ctx := context.Background()
+	config, err := getGoogleConfig(useScope)
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse client secret file to config: %w", err)
+		return nil, fmt.Errorf("unable to get Google API config: %w", err)
 	}
-	client, err := getClient(config)
-	if err != nil {
-		return nil, fmt.Errorf("unable to get HTTP client: %w", err)
+
+	var client *http.Client
+	options := []option.ClientOption{}
+	if config != nil {
+		client, err = getClient(config)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get HTTP client: %w", err)
+		}
+		options = append(options, option.WithHTTPClient(client))
+	} else {
+		// Fallback to ADC
+		options = append(options, option.WithScopes(useScope...))
 	}
-	srv, err := calendar.NewService(context.Background(), option.WithHTTPClient(client))
+	srv, err := calendar.NewService(ctx, options...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create Calendar service: %w", err)
 	}
@@ -163,20 +197,26 @@ func GetCalendarService() (*calendar.Service, error) {
 }
 
 func GetAdminDirectoryService(scope ...string) (*admdir.Service, error) {
-	b, err := os.ReadFile("credentials.json")
-	if err != nil {
-		return nil, fmt.Errorf("unable to read client secret file: %w", err)
-	}
 	useScope := GetGaliScope()
-	config, err := google.ConfigFromJSON(b, useScope...)
+	ctx := context.Background()
+	config, err := getGoogleConfig(useScope)
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse client secret file to config: %w", err)
+		return nil, fmt.Errorf("unable to get Google API config: %w", err)
 	}
-	client, err := getClient(config)
-	if err != nil {
-		return nil, fmt.Errorf("unable to get HTTP client: %w", err)
+
+	var client *http.Client
+	options := []option.ClientOption{}
+	if config != nil {
+		client, err = getClient(config)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get HTTP client: %w", err)
+		}
+		options = append(options, option.WithHTTPClient(client))
+	} else {
+		// Fallback to ADC
+		options = append(options, option.WithScopes(useScope...))
 	}
-	srv, err := admdir.NewService(context.Background(), option.WithHTTPClient(client))
+	srv, err := admdir.NewService(ctx, options...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to create Admin Directory service: %w", err)
 	}

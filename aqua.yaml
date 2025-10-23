@@ -9,7 +9,7 @@
 #   - all
 registries:
 - type: standard
-  ref: v4.427.0 # renovate: depName=aquaproj/aqua-registry
+  ref: v4.428.0 # renovate: depName=aquaproj/aqua-registry
 packages:
 - name: suzuki-shunsuke/pinact@v3.4.2
   tags:
@@ -18,7 +18,7 @@ packages:
   tags:
     - dev
     - ci
-- name: goreleaser/goreleaser@v2.12.5
+- name: goreleaser/goreleaser@v2.12.6
   tags:
     - dev
     - ci
