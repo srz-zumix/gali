@@ -134,34 +134,6 @@ func saveToken(path string, token *oauth2.Token) error {
 	return nil
 }
 
-// getConfigFromEnv attempts to create an oauth2.Config from environment variables.
-// It expects GALI_CLIENT_ID and GALI_CLIENT_SECRET to be set.
-func getConfigFromEnv(scopes []string) (*oauth2.Config, error) {
-	clientID := os.Getenv("GALI_CLIENT_ID")
-	clientSecret := os.Getenv("GALI_CLIENT_SECRET")
-
-	if clientID == "" || clientSecret == "" {
-		return nil, fmt.Errorf("GALI_CLIENT_ID and GALI_CLIENT_SECRET environment variables must be set")
-	}
-
-	// Construct a minimal JSON structure that google.ConfigFromJSON can parse.
-	// This mimics the 'web' application type credentials.
-	jsonConfig := fmt.Sprintf(`{
-		"web": {
-			"client_id": "%s",
-			"client_secret": "%s",
-			"auth_uri": "https://accounts.google.com/o/oauth2/auth",
-			"token_uri": "https://oauth2.googleapis.com/token"
-		}
-	}`, clientID, clientSecret)
-
-	config, err := google.ConfigFromJSON([]byte(jsonConfig), scopes...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create config from environment variables: %w", err)
-	}
-	return config, nil
-}
-
 // getGoogleConfig attempts to load Google API configuration,
 // first from credentials.json, and if not found, then from environment variables.
 func getGoogleConfig(scopes []string) (*oauth2.Config, error) {
@@ -182,17 +154,12 @@ func getGoogleConfig(scopes []string) (*oauth2.Config, error) {
 
 	// If credentials.json not found, try environment variables
 	if os.IsNotExist(err) {
-		config, envErr := getConfigFromEnv(scopes)
-		if envErr == nil {
-			log.Printf("credentials.json not found, using config from environment variables.")
-			return config, nil
-		}
 		// Neither credentials.json nor environment variables are set.
 		return nil, nil // Signal to fallback to ADC
 	}
 
 	// Other error reading credentials.json
-	return nil, fmt.Errorf("unable to read credentials.json: %w", err)
+	return nil, fmt.Errorf("unable to read %v: %w", credentialsFile, err)
 }
 
 func GetGaliScope() []string {
