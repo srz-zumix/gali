@@ -23,7 +23,13 @@ func GetUnionMappedEvents(srv *calendar.Service, calendarIDs []string, since, un
 		refEvents, err := ListEvents(srv, id, since, until)
 		if err == nil {
 			for _, item := range refEvents.Items {
-				unionEvents[item.Id] = item
+				if current, ok := unionEvents[item.Id]; !ok {
+					unionEvents[item.Id] = item
+				} else {
+					if current.Summary == "" && item.Summary != "" {
+						unionEvents[item.Id] = item
+					}
+				}
 			}
 		}
 	}
@@ -33,7 +39,7 @@ func GetUnionMappedEvents(srv *calendar.Service, calendarIDs []string, since, un
 // CompletePrivateEvents replaces private events in mainEvents with ref events if available
 func CompletePrivateEvents(mainEvents *calendar.Events, refEventMap map[string]*calendar.Event) {
 	for i, item := range mainEvents.Items {
-		if item.Visibility == "private" {
+		if item.Visibility == "private" && item.Summary == "" {
 			if ref, ok := refEventMap[item.Id]; ok {
 				if ref.Attendees != nil {
 					for _, attendee := range ref.Attendees {
@@ -46,7 +52,9 @@ func CompletePrivateEvents(mainEvents *calendar.Events, refEventMap map[string]*
 						}
 					}
 				}
-				mainEvents.Items[i] = ref
+				if ref.Summary != "" {
+					mainEvents.Items[i] = ref
+				}
 			}
 		}
 	}
