@@ -197,7 +197,13 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 		}
 	}
 
+	initialGrid := true
+
 	updateTimeGrid := func(date time.Time) {
+		// Save current scroll position before clearing
+		prevRow, prevCol := timeGrid.GetSelection()
+		prevOffsetRow, prevOffsetCol := timeGrid.GetOffset()
+
 		timeGrid.Clear()
 		gridRowToEvent = make(map[int]*calendar.Event)
 
@@ -411,9 +417,17 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 			detailView.SetText("")
 		}
 
-		// Scroll to 8:00 AM by default (fixed rows + 8h * 2 slots)
-		timeGrid.Select(fixedRows+8*2, 0)
-		timeGrid.SetOffset(8*2, 0)
+		// Restore or initialize scroll position
+		if initialGrid {
+			// First time: scroll to 8:00 AM
+			timeGrid.Select(fixedRows+8*2, 0)
+			timeGrid.SetOffset(8*2, 0)
+			initialGrid = false
+		} else {
+			// Subsequent: maintain previous scroll position
+			timeGrid.SetOffset(prevOffsetRow, prevOffsetCol)
+			timeGrid.Select(prevRow, prevCol)
+		}
 	}
 
 	renderMiniCalendar()
@@ -839,15 +853,23 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 			if att.DisplayName != "" {
 				name = att.DisplayName
 			}
-			status := ""
-			if att.ResponseStatus != "" {
-				status = fmt.Sprintf(" (%s)", att.ResponseStatus)
-			}
 			self := ""
 			if att.Self {
 				self = " [green](you)[-]"
 			}
-			sb.WriteString(fmt.Sprintf("  • %s%s%s\n", name, status, self))
+			// Color and style by response status
+			switch att.ResponseStatus {
+			case "accepted":
+				sb.WriteString(fmt.Sprintf("  [green]✔ %s[-]%s\n", name, self))
+			case "declined":
+				sb.WriteString(fmt.Sprintf("  [red::d]✘ [::s]%s[::-][-]%s\n", name, self))
+			case "tentative":
+				sb.WriteString(fmt.Sprintf("  [yellow]? %s[-]%s\n", name, self))
+			case "needsAction":
+				sb.WriteString(fmt.Sprintf("  [gray]… %s[-]%s\n", name, self))
+			default:
+				sb.WriteString(fmt.Sprintf("  • %s%s\n", name, self))
+			}
 		}
 	}
 
