@@ -47,3 +47,30 @@ func GetIdMappedEvents(srv *calendar.Service, since, until string, calendarIDs .
 	}
 	return calendars
 }
+
+func ResolveCalendarIDAlias(srv *calendar.Service, calendarID string) string {
+	if calendarID == "@me" || calendarID == "me" {
+		return "primary"
+	}
+	return calendarID
+}
+
+func ResolveCalendarID(srv *calendar.Service, calendarID string) string {
+	id := ResolveCalendarIDAlias(srv, calendarID)
+	if id == "primary" {
+		userInfo, err := srv.Acl.List("primary").Do()
+		if err != nil {
+			log.Fatalf("Unable to retrieve primary calendar info: %v", err)
+		}
+		return userInfo.Items[0].Scope.Value
+	}
+	return id
+}
+
+func ResolveCalendarIDs(srv *calendar.Service, calendarIDs []string) []string {
+	resolved := make([]string, len(calendarIDs))
+	for i, calID := range calendarIDs {
+		resolved[i] = ResolveCalendarID(srv, calID)
+	}
+	return resolved
+}
