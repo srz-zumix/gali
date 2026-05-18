@@ -34,7 +34,7 @@ jobs:
     environment:
       name: homebrew-tap
     steps:
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3.1.1
         id: generate
         with:
           client-id: ${{ secrets.APP_CLIENT_ID }}
