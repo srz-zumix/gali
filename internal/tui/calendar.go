@@ -806,7 +806,7 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 	if summary == "" {
 		summary = "(Private Event)"
 	}
-	sb.WriteString(fmt.Sprintf("[yellow::b]%s[::-]\n\n", summary))
+	fmt.Fprintf(&sb, "[yellow::b]%s[::-]\n\n", summary)
 
 	// Time
 	if ev.Start != nil {
@@ -817,36 +817,36 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 				end = ev.End.DateTime
 			}
 			if t, err := time.Parse(time.RFC3339, start); err == nil {
-				sb.WriteString(fmt.Sprintf("[white::b]When:[::-] %s", t.In(loc).Format("2006-01-02 15:04")))
+				fmt.Fprintf(&sb, "[white::b]When:[::-] %s", t.In(loc).Format("2006-01-02 15:04"))
 				if end != "" {
 					if te, err := time.Parse(time.RFC3339, end); err == nil {
-						sb.WriteString(fmt.Sprintf(" - %s", te.In(loc).Format("15:04")))
+						fmt.Fprintf(&sb, " - %s", te.In(loc).Format("15:04"))
 					}
 				}
 				sb.WriteString("\n")
 			}
 		} else if ev.Start.Date != "" {
-			sb.WriteString(fmt.Sprintf("[white::b]When:[::-] %s (All-day)\n", ev.Start.Date))
+			fmt.Fprintf(&sb, "[white::b]When:[::-] %s (All-day)\n", ev.Start.Date)
 		}
 	}
 
 	// Location
 	if ev.Location != "" {
-		sb.WriteString(fmt.Sprintf("[white::b]Location:[::-] %s\n", ev.Location))
+		fmt.Fprintf(&sb, "[white::b]Location:[::-] %s\n", ev.Location)
 	}
 
 	// Status
 	status := gcalendar.GetSelfResponseStatus(ev)
 	if status != "" {
-		sb.WriteString(fmt.Sprintf("[white::b]Status:[::-] %s\n", status))
+		fmt.Fprintf(&sb, "[white::b]Status:[::-] %s\n", status)
 	}
 
 	// Attendees
 	if len(ev.Attendees) > 0 {
-		sb.WriteString(fmt.Sprintf("\n[white::b]Attendees (%d):[::-]\n", len(ev.Attendees)))
+		fmt.Fprintf(&sb, "\n[white::b]Attendees (%d):[::-]\n", len(ev.Attendees))
 		for i, att := range ev.Attendees {
 			if i >= 20 {
-				sb.WriteString(fmt.Sprintf("  ... and %d more\n", len(ev.Attendees)-20))
+				fmt.Fprintf(&sb, "  ... and %d more\n", len(ev.Attendees)-20)
 				break
 			}
 			name := att.Email
@@ -860,15 +860,15 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 			// Color and style by response status
 			switch att.ResponseStatus {
 			case "accepted":
-				sb.WriteString(fmt.Sprintf("  [green]✔ %s[-]%s\n", name, self))
+				fmt.Fprintf(&sb, "  [green]✔ %s[-]%s\n", name, self)
 			case "declined":
-				sb.WriteString(fmt.Sprintf("  [red::d]✘ [::s]%s[::-][-]%s\n", name, self))
+				fmt.Fprintf(&sb, "  [red::d]✘ [::s]%s[::-][-]%s\n", name, self)
 			case "tentative":
-				sb.WriteString(fmt.Sprintf("  [yellow]? %s[-]%s\n", name, self))
+				fmt.Fprintf(&sb, "  [yellow]? %s[-]%s\n", name, self)
 			case "needsAction":
-				sb.WriteString(fmt.Sprintf("  [gray]… %s[-]%s\n", name, self))
+				fmt.Fprintf(&sb, "  [gray]… %s[-]%s\n", name, self)
 			default:
-				sb.WriteString(fmt.Sprintf("  • %s%s\n", name, self))
+				fmt.Fprintf(&sb, "  • %s%s\n", name, self)
 			}
 		}
 	}
@@ -882,7 +882,7 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 
 	// Link
 	if ev.HtmlLink != "" {
-		sb.WriteString(fmt.Sprintf("\n[white::b]Link:[::-] %s\n", ev.HtmlLink))
+		fmt.Fprintf(&sb, "\n[white::b]Link:[::-] %s\n", ev.HtmlLink)
 	}
 
 	return sb.String()
