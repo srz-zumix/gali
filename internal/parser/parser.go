@@ -71,7 +71,7 @@ func ParseWorkHours(s string) (time.Duration, time.Duration, error) {
 }
 
 func parseClock(s string) (time.Duration, error) {
-	t, err := time.Parse("15:04", s)
+	t, err := time.Parse("15:04", strings.TrimSpace(s))
 	if err != nil {
 		return 0, fmt.Errorf("invalid time format (expected HH:MM): %s", s)
 	}

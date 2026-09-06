@@ -1,6 +1,7 @@
 package gcalendar
 
 import (
+	"fmt"
 	"log"
 
 	"google.golang.org/api/calendar/v3"
@@ -55,22 +56,29 @@ func ResolveCalendarIDAlias(srv *calendar.Service, calendarID string) string {
 	return calendarID
 }
 
-func ResolveCalendarID(srv *calendar.Service, calendarID string) string {
+func ResolveCalendarID(srv *calendar.Service, calendarID string) (string, error) {
 	id := ResolveCalendarIDAlias(srv, calendarID)
 	if id == "primary" {
 		userInfo, err := srv.Acl.List("primary").Do()
 		if err != nil {
-			log.Fatalf("Unable to retrieve primary calendar info: %v", err)
+			return "", fmt.Errorf("unable to retrieve primary calendar info: %w", err)
 		}
-		return userInfo.Items[0].Scope.Value
+		if len(userInfo.Items) == 0 || userInfo.Items[0].Scope == nil {
+			return id, nil
+		}
+		return userInfo.Items[0].Scope.Value, nil
 	}
-	return id
+	return id, nil
 }
 
-func ResolveCalendarIDs(srv *calendar.Service, calendarIDs []string) []string {
+func ResolveCalendarIDs(srv *calendar.Service, calendarIDs []string) ([]string, error) {
 	resolved := make([]string, len(calendarIDs))
 	for i, calID := range calendarIDs {
-		resolved[i] = ResolveCalendarID(srv, calID)
+		id, err := ResolveCalendarID(srv, calID)
+		if err != nil {
+			return nil, err
+		}
+		resolved[i] = id
 	}
-	return resolved
+	return resolved, nil
 }

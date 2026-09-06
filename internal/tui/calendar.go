@@ -68,24 +68,22 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 		calendarColorMap[calID] = i
 	}
 
-	// switchMonth changes the displayed month by fetching new events
+	// switchMonth fetches events for the given month without mutating shared
+	// UI state. The caller must apply the returned data on the UI goroutine.
 	var fetchMu sync.Mutex
 	fetching := false
-	switchMonth := func(newMonthFirst time.Time) bool {
+	switchMonth := func(newMonthFirst time.Time) (map[string][]*calendar.Event, bool) {
 		if opts.FetchEvents == nil {
-			return false
+			return nil, false
 		}
 		since := newMonthFirst.Format(time.RFC3339)
 		untilTime := newMonthFirst.AddDate(0, 1, 0).Add(-time.Nanosecond)
 		until := untilTime.Format(time.RFC3339)
 		newEvents, err := opts.FetchEvents(since, until)
 		if err != nil {
-			return false
+			return nil, false
 		}
-		// Update state
-		monthFirst = newMonthFirst
-		eventsByDay = groupEventsByDay(newEvents, loc, opts.ShowDeclined)
-		return true
+		return groupEventsByDay(newEvents, loc, opts.ShowDeclined), true
 	}
 
 	app := tview.NewApplication()
@@ -321,7 +319,7 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 				}
 				colorIdx := getOrganizerColor(ev)
 				markers := getCalendarMarkers(ev)
-				cell := tview.NewTableCell(" ■ " + markers + summary).
+				cell := tview.NewTableCell(" ■ " + markers + tview.Escape(summary)).
 					SetTextColor(eventColors[colorIdx])
 				if i == 0 {
 					timeGrid.SetCell(row, 1, cell)
@@ -386,7 +384,7 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 								endTime = formatHM(se.event.End.DateTime, loc)
 							}
 							markers := getCalendarMarkers(se.event)
-							text := fmt.Sprintf("┌─%s %s%s", endTime, markers, summary)
+							text := fmt.Sprintf("┌─%s %s%s", endTime, markers, tview.Escape(summary))
 							parts = append(parts, text)
 						} else {
 							// Event continues
@@ -460,12 +458,14 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 		header.SetText(fmt.Sprintf("%s  %s  [yellow]Loading...[-]", title, newMonth.Format("2006-01")))
 
 		go func() {
-			ok := switchMonth(newMonth)
+			newEventsByDay, ok := switchMonth(newMonth)
 			app.QueueUpdateDraw(func() {
 				fetchMu.Lock()
 				fetching = false
 				fetchMu.Unlock()
 				if ok {
+					monthFirst = newMonth
+					eventsByDay = newEventsByDay
 					updateHeader()
 					renderMiniCalendar()
 					selectFirstDay()
@@ -691,17 +691,27 @@ func getEventSlots(ev *calendar.Event, loc *time.Location) (int, int) {
 	startSlot := 0
 	endSlot := 48 // Default to end of day
 
+	var startDay time.Time
+	startDayValid := false
 	if t, err := time.Parse(time.RFC3339, ev.Start.DateTime); err == nil {
 		tLoc := t.In(loc)
 		startSlot = tLoc.Hour()*2 + tLoc.Minute()/30
+		startDay = time.Date(tLoc.Year(), tLoc.Month(), tLoc.Day(), 0, 0, 0, 0, loc)
+		startDayValid = true
 	}
 
 	if ev.End != nil && ev.End.DateTime != "" {
 		if t, err := time.Parse(time.RFC3339, ev.End.DateTime); err == nil {
 			tLoc := t.In(loc)
-			endSlot = tLoc.Hour()*2 + tLoc.Minute()/30
-			if tLoc.Minute()%30 > 0 {
-				endSlot++ // Round up
+			endDay := time.Date(tLoc.Year(), tLoc.Month(), tLoc.Day(), 0, 0, 0, 0, loc)
+			if startDayValid && endDay.After(startDay) {
+				// Event ends on a later day: fill the remainder of the start day.
+				endSlot = 48
+			} else {
+				endSlot = tLoc.Hour()*2 + tLoc.Minute()/30
+				if tLoc.Minute()%30 > 0 {
+					endSlot++ // Round up
+				}
 			}
 		}
 	}
@@ -751,38 +761,6 @@ func eventSortKey(ev *calendar.Event, loc *time.Location) string {
 	return ev.Start.Date
 }
 
-func formatEventLine(ev *calendar.Event, loc *time.Location) string {
-	if ev == nil {
-		return ""
-	}
-	summary := ev.Summary
-	if summary == "" {
-		summary = "Private Event"
-	}
-	when := "All-day"
-	if ev.Start != nil && ev.Start.DateTime != "" {
-		start := formatHM(ev.Start.DateTime, loc)
-		end := ""
-		if ev.End != nil {
-			if ev.End.DateTime != "" {
-				end = formatHM(ev.End.DateTime, loc)
-			} else if ev.End.Date != "" {
-				end = "24:00"
-			}
-		}
-		if start != "" && end != "" {
-			when = start + "-" + end
-		} else if start != "" {
-			when = start
-		}
-	}
-	line := when + "  " + summary
-	if ev.Location != "" {
-		line += " @" + strings.TrimSpace(ev.Location)
-	}
-	return line
-}
-
 func formatHM(rfc3339 string, loc *time.Location) string {
 	if rfc3339 == "" {
 		return ""
@@ -806,7 +784,7 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 	if summary == "" {
 		summary = "(Private Event)"
 	}
-	fmt.Fprintf(&sb, "[yellow::b]%s[::-]\n\n", summary)
+	fmt.Fprintf(&sb, "[yellow::b]%s[::-]\n\n", tview.Escape(summary))
 
 	// Time
 	if ev.Start != nil {
@@ -832,7 +810,7 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 
 	// Location
 	if ev.Location != "" {
-		fmt.Fprintf(&sb, "[white::b]Location:[::-] %s\n", ev.Location)
+		fmt.Fprintf(&sb, "[white::b]Location:[::-] %s\n", tview.Escape(ev.Location))
 	}
 
 	// Status
@@ -853,6 +831,7 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 			if att.DisplayName != "" {
 				name = att.DisplayName
 			}
+			name = tview.Escape(name)
 			self := ""
 			if att.Self {
 				self = " [green](you)[-]"
@@ -876,7 +855,7 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 	// Description
 	if ev.Description != "" {
 		sb.WriteString("\n[white::b]Description:[::-]\n")
-		sb.WriteString(ev.Description)
+		sb.WriteString(tview.Escape(ev.Description))
 		sb.WriteString("\n")
 	}
 

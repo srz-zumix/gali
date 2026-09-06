@@ -60,9 +60,15 @@ func suggestCandidates(calendarIDs ...string) {
 	if err != nil {
 		log.Fatalf("Invalid --duration: %v", err)
 	}
+	if durationDur <= 0 {
+		log.Fatalf("--duration must be greater than zero")
+	}
 	stepDur, err := time.ParseDuration(step)
 	if err != nil {
 		log.Fatalf("Invalid --step: %v", err)
+	}
+	if stepDur <= 0 {
+		log.Fatalf("--step must be greater than zero")
 	}
 	workStart, workEnd, err := parser.ParseWorkHours(workHours)
 	if err != nil {
