@@ -287,7 +287,7 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 		slots := make(map[int][]eventSlot) // slot index -> events in that slot
 
 		for _, ev := range timedEvents {
-			startSlot, endSlot := getEventSlots(ev, loc)
+			startSlot, endSlot := getEventSlots(ev, loc, date)
 			colorIdx := getOrganizerColor(ev)
 			for slot := startSlot; slot < endSlot; slot++ {
 				slots[slot] = append(slots[slot], eventSlot{ev, colorIdx})
@@ -372,16 +372,25 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 					// Show events in this slot
 					var parts []string
 					for _, se := range slotEvents {
-						startSlot, _ := getEventSlots(se.event, loc)
+						startSlot, _ := getEventSlots(se.event, loc, date)
 						if startSlot == slotIdx {
-							// Event starts here - show full info
+							// Event starts here (or continues from a previous day) - show full info
 							summary := se.event.Summary
 							if summary == "" {
 								summary = "(Private)"
 							}
 							endTime := ""
 							if se.event.End != nil && se.event.End.DateTime != "" {
-								endTime = formatHM(se.event.End.DateTime, loc)
+								if e, err := time.Parse(time.RFC3339, se.event.End.DateTime); err == nil {
+									eLoc := e.In(loc)
+									dayEnd := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc).AddDate(0, 0, 1)
+									if !eLoc.Before(dayEnd) {
+										// Event continues past this day.
+										endTime = "24:00"
+									} else {
+										endTime = eLoc.Format("15:04")
+									}
+								}
 							}
 							markers := getCalendarMarkers(se.event)
 							text := fmt.Sprintf("┌─%s %s%s", endTime, markers, tview.Escape(summary))
@@ -492,6 +501,7 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 		}
 	}
 	if found {
+		selectedDate = initial
 		miniCal.Select(initRow, initCol)
 		updateTimeGrid(initial)
 	}
@@ -579,16 +589,13 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 					fetching = false
 					fetchMu.Unlock()
 					if err == nil {
-						// Merge fetched day events into existing eventsByDay
+						// Replace only the selected day's bucket. Multi-day events
+						// may span other days, but a single-day fetch is not an
+						// authoritative refresh of those days, so we must not
+						// clobber their cached events.
 						dayEvents := groupEventsByDay(newEvents, loc, opts.ShowDeclined)
-						for k, v := range dayEvents {
-							eventsByDay[k] = v
-						}
-						// Also set the key if no events were returned (clear stale data)
 						dayKey := day.Format("2006-01-02")
-						if _, ok := dayEvents[dayKey]; !ok {
-							eventsByDay[dayKey] = nil
-						}
+						eventsByDay[dayKey] = dayEvents[dayKey]
 						updateHeader()
 						renderMiniCalendar()
 						// Re-select the same date
@@ -672,47 +679,107 @@ func groupEventsByDay(events *calendar.Events, loc *time.Location, showDeclined 
 				continue
 			}
 		}
-		d := eventStartDay(ev, loc)
-		if d.IsZero() {
-			continue
+		for _, key := range eventDayKeys(ev, loc) {
+			out[key] = append(out[key], ev)
 		}
-		key := d.Format("2006-01-02")
-		out[key] = append(out[key], ev)
 	}
 	return out
 }
 
-// getEventSlots returns start and end slot indices (30-minute intervals, 0-47)
-func getEventSlots(ev *calendar.Event, loc *time.Location) (int, int) {
+// eventDayKeys returns the "2006-01-02" keys for every day the event occupies.
+// Timed events use a half-open [start, end) interval; all-day events use the
+// Google Calendar half-open [Start.Date, End.Date) convention.
+func eventDayKeys(ev *calendar.Event, loc *time.Location) []string {
+	if ev == nil || ev.Start == nil {
+		return nil
+	}
+
+	var startDay, lastDay time.Time
+
+	switch {
+	case ev.Start.DateTime != "":
+		s, err := time.Parse(time.RFC3339, ev.Start.DateTime)
+		if err != nil {
+			return nil
+		}
+		sLoc := s.In(loc)
+		startDay = time.Date(sLoc.Year(), sLoc.Month(), sLoc.Day(), 0, 0, 0, 0, loc)
+		lastDay = startDay
+		if ev.End != nil && ev.End.DateTime != "" {
+			if e, err := time.Parse(time.RFC3339, ev.End.DateTime); err == nil {
+				eLoc := e.In(loc)
+				// Half-open interval: the last occupied day is the day of end-1ns.
+				last := eLoc.Add(-time.Nanosecond)
+				if last.After(sLoc) {
+					lastDay = time.Date(last.Year(), last.Month(), last.Day(), 0, 0, 0, 0, loc)
+				}
+			}
+		}
+	case ev.Start.Date != "":
+		s, err := time.ParseInLocation("2006-01-02", ev.Start.Date, loc)
+		if err != nil {
+			return nil
+		}
+		startDay = s
+		lastDay = s
+		if ev.End != nil && ev.End.Date != "" {
+			if e, err := time.ParseInLocation("2006-01-02", ev.End.Date, loc); err == nil {
+				// End.Date is exclusive: last occupied day is End.Date - 1.
+				last := e.AddDate(0, 0, -1)
+				if last.After(s) {
+					lastDay = last
+				}
+			}
+		}
+	default:
+		return nil
+	}
+
+	var keys []string
+	for d := startDay; !d.After(lastDay); d = d.AddDate(0, 0, 1) {
+		keys = append(keys, d.Format("2006-01-02"))
+	}
+	return keys
+}
+
+// getEventSlots returns start and end slot indices (30-minute intervals, 0-48)
+// for the event as it should be rendered on the given day. Events that begin on
+// an earlier day are clamped to start at slot 0, and events that continue past
+// the given day are clamped to end at slot 48.
+func getEventSlots(ev *calendar.Event, loc *time.Location, day time.Time) (int, int) {
 	if ev == nil || ev.Start == nil || ev.Start.DateTime == "" {
 		return 0, 0
 	}
 
-	startSlot := 0
-	endSlot := 48 // Default to end of day
+	dayStart := time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, loc)
+	dayEnd := dayStart.AddDate(0, 0, 1) // DST-safe next midnight
 
-	var startDay time.Time
-	startDayValid := false
-	if t, err := time.Parse(time.RFC3339, ev.Start.DateTime); err == nil {
-		tLoc := t.In(loc)
-		startSlot = tLoc.Hour()*2 + tLoc.Minute()/30
-		startDay = time.Date(tLoc.Year(), tLoc.Month(), tLoc.Day(), 0, 0, 0, 0, loc)
-		startDayValid = true
+	start, err := time.Parse(time.RFC3339, ev.Start.DateTime)
+	if err != nil {
+		return 0, 1
+	}
+	start = start.In(loc)
+
+	end := start.Add(30 * time.Minute) // minimal default duration
+	if ev.End != nil && ev.End.DateTime != "" {
+		if e, err := time.Parse(time.RFC3339, ev.End.DateTime); err == nil {
+			eLoc := e.In(loc)
+			if eLoc.After(start) {
+				end = eLoc
+			}
+		}
 	}
 
-	if ev.End != nil && ev.End.DateTime != "" {
-		if t, err := time.Parse(time.RFC3339, ev.End.DateTime); err == nil {
-			tLoc := t.In(loc)
-			endDay := time.Date(tLoc.Year(), tLoc.Month(), tLoc.Day(), 0, 0, 0, 0, loc)
-			if startDayValid && endDay.After(startDay) {
-				// Event ends on a later day: fill the remainder of the start day.
-				endSlot = 48
-			} else {
-				endSlot = tLoc.Hour()*2 + tLoc.Minute()/30
-				if tLoc.Minute()%30 > 0 {
-					endSlot++ // Round up
-				}
-			}
+	startSlot := 0
+	if !start.Before(dayStart) {
+		startSlot = start.Hour()*2 + start.Minute()/30
+	}
+
+	endSlot := 48
+	if end.Before(dayEnd) {
+		endSlot = end.Hour()*2 + end.Minute()/30
+		if end.Minute()%30 > 0 {
+			endSlot++ // Round up
 		}
 	}
 
@@ -724,28 +791,6 @@ func getEventSlots(ev *calendar.Event, loc *time.Location) (int, int) {
 	}
 
 	return startSlot, endSlot
-}
-
-func eventStartDay(ev *calendar.Event, loc *time.Location) time.Time {
-	if ev == nil || ev.Start == nil {
-		return time.Time{}
-	}
-	if ev.Start.DateTime != "" {
-		if t, err := time.Parse(time.RFC3339, ev.Start.DateTime); err == nil {
-			return time.Date(t.In(loc).Year(), t.In(loc).Month(), t.In(loc).Day(), 0, 0, 0, 0, loc)
-		}
-		if len(ev.Start.DateTime) >= 10 {
-			if t, err := time.ParseInLocation("2006-01-02", ev.Start.DateTime[:10], loc); err == nil {
-				return t
-			}
-		}
-	}
-	if ev.Start.Date != "" {
-		if t, err := time.ParseInLocation("2006-01-02", ev.Start.Date, loc); err == nil {
-			return t
-		}
-	}
-	return time.Time{}
 }
 
 func eventSortKey(ev *calendar.Event, loc *time.Location) string {

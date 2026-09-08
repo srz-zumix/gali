@@ -31,6 +31,7 @@ func NewIntersectCmd() *cobra.Command {
 	f.StringArrayVarP(&refIDs, "ref", "r", nil, "Reference calendar ID(s) for private event completion (can be specified multiple times)")
 	f.StringVar(&building, "building", "", "Building ID to fetch all resource emails as reference calendars")
 	f.BoolVarP(&refMyCals, "ref-mycals", "R", false, "Use all my calendars as reference for private event completion")
+	f.BoolVarP(&showDeclined, "show-declined", "D", false, "Show declined events (yes or no)")
 	f.BoolVarP(&useTUI, "tui", "t", false, "Show events in TUI mode")
 	AddDebugFlag(cmd)
 	return cmd
@@ -110,6 +111,7 @@ func intersectEvents(calendarIDs ...string) {
 
 	renderer := render.NewRenderer()
 	renderer.Debug = debug
+	renderer.ShowDeclined = showDeclined
 	renderer.SetExporter(render.GetExporter(format))
 	renderer.RenderEventsDefault(intersect)
 }
