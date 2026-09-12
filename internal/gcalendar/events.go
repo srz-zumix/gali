@@ -6,7 +6,8 @@ import (
 
 // ListEvents lists events from the specified calendarID between since and until (inclusive)
 func ListEvents(srv *calendar.Service, calendarID, since, until string) (*calendar.Events, error) {
-	call := srv.Events.List(calendarID).ShowDeleted(false).SingleEvents(true).OrderBy("startTime").MaxResults(100)
+	id := ResolveCalendarIDAlias(srv, calendarID)
+	call := srv.Events.List(id).ShowDeleted(false).SingleEvents(true).OrderBy("startTime").MaxResults(1000)
 	if since != "" {
 		call = call.TimeMin(since)
 	}
@@ -69,4 +70,15 @@ func GetSelfResponseStatus(event *calendar.Event) string {
 		}
 	}
 	return ""
+}
+
+func FindAttendeeByEmail(event *calendar.Event, email string) *calendar.EventAttendee {
+	if event.Attendees != nil {
+		for _, attendee := range event.Attendees {
+			if attendee.Email == email {
+				return attendee
+			}
+		}
+	}
+	return nil
 }

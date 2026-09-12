@@ -23,9 +23,11 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.AddCommand(NewCalendarCmd())
 	rootCmd.AddCommand(NewEventsCmd())
 	rootCmd.AddCommand(NewIntersectCmd())
 	rootCmd.AddCommand(NewListCmd())
 	rootCmd.AddCommand(NewResCmd())
+	rootCmd.AddCommand(NewSuggestCmd())
 	rootCmd.AddCommand(NewUnionCmd())
 }

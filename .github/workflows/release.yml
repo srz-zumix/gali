@@ -14,11 +14,9 @@ on:
     secrets:
       APP_ID:
         required: true
-      APP_CLIENT_ID:
-        required: true
       APP_PRIVATE_KEY:
         required: true
-        
+
 permissions: {}
 
 jobs:
@@ -37,7 +35,7 @@ jobs:
       - uses: actions/create-github-app-token@v2
         id: generate
         with:
-          client-id: ${{ secrets.APP_CLIENT_ID }}
+          app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
           permission-contents: write
           repositories: |
@@ -51,7 +49,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: stable
+          go-version-file: go.mod
+          cache: false
 
       - name: Create tag
         run: |
