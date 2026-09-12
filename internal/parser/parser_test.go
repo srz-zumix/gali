@@ -36,3 +36,32 @@ func TestParseWorkHours(t *testing.T) {
 		}
 	}
 }
+
+func TestParseSinceUntilExclusiveNextMidnight(t *testing.T) {
+	t.Setenv("TZ", "Asia/Tokyo")
+	since, until, err := ParseSinceUntil("2026-01-05", "2026-01-05")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if since != "2026-01-05T00:00:00+09:00" {
+		t.Errorf("since = %q, want 2026-01-05T00:00:00+09:00", since)
+	}
+	// timeMax is exclusive: the day after `until` at midnight.
+	if until != "2026-01-06T00:00:00+09:00" {
+		t.Errorf("until = %q, want 2026-01-06T00:00:00+09:00", until)
+	}
+}
+
+func TestParseSinceUntilDSTSafe(t *testing.T) {
+	// US spring-forward day (2026-03-08) is only 23 hours long; a naive
+	// "+23h59m" offset would spill past local midnight. The exclusive
+	// next-midnight boundary must stay at the following local midnight.
+	t.Setenv("TZ", "America/New_York")
+	_, until, err := ParseSinceUntil("2026-03-08", "2026-03-08")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if until != "2026-03-09T00:00:00-04:00" {
+		t.Errorf("until = %q, want 2026-03-09T00:00:00-04:00", until)
+	}
+}

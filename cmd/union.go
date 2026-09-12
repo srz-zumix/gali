@@ -28,8 +28,8 @@ func NewUnionCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&since, "since", "", "Start date (RFC3339 or YYYY-MM-DD)")
-	f.StringVar(&until, "until", "", "End date (RFC3339 or YYYY-MM-DD)")
+	f.StringVar(&since, "since", "", "Start date (YYYY-MM-DD)")
+	f.StringVar(&until, "until", "", "End date (YYYY-MM-DD)")
 	f.StringVar(&format, "format", "", "Output format (json or empty for text)")
 	f.StringArrayVarP(&refIDs, "ref", "r", nil, "Reference calendar ID(s) for private event completion (can be specified multiple times)")
 	f.StringVar(&building, "building", "", "Building ID to fetch all resource emails as reference calendars")
@@ -51,7 +51,7 @@ func unionEvents(calendarIDs ...string) {
 		log.Fatalf("Invalid date format: %v", err)
 	}
 
-	calendars := gcalendar.GetIdMappedEvents(srv, since, until, calendarIDs...)
+	calendars := gcalendar.GetIdMappedEvents(srv, since, until, showDeclined, calendarIDs...)
 
 	var union = &calendar.Events{Items: []*calendar.Event{}}
 	var unionMap = map[string]*calendar.Event{}
@@ -101,7 +101,7 @@ func unionEvents(calendarIDs ...string) {
 		loc := loadLocation()
 		title := fmt.Sprintf("gali union (%s)", strings.Join(calendarIDs, ", "))
 		fetchEvents := func(since, until string) (*calendar.Events, error) {
-			cals := gcalendar.GetIdMappedEvents(srv, since, until, calendarIDs...)
+			cals := gcalendar.GetIdMappedEvents(srv, since, until, showDeclined, calendarIDs...)
 			var result = &calendar.Events{Items: []*calendar.Event{}}
 			var uMap = map[string]*calendar.Event{}
 			for idx, cal := range cals {

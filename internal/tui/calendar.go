@@ -77,8 +77,8 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 			return nil, false
 		}
 		since := newMonthFirst.Format(time.RFC3339)
-		untilTime := newMonthFirst.AddDate(0, 1, 0).Add(-time.Nanosecond)
-		until := untilTime.Format(time.RFC3339)
+		// timeMax is exclusive: use the next month's midnight (DST-safe).
+		until := newMonthFirst.AddDate(0, 1, 0).Format(time.RFC3339)
 		newEvents, err := opts.FetchEvents(since, until)
 		if err != nil {
 			return nil, false
@@ -581,8 +581,8 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 			header.SetText(fmt.Sprintf("%s  %s  [yellow]Loading %s...[-]", title, monthFirst.Format("2006-01"), day.Format("01-02")))
 			go func() {
 				since := day.Format(time.RFC3339)
-				untilTime := day.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
-				until := untilTime.Format(time.RFC3339)
+				// timeMax is exclusive: use the next day's midnight (DST-safe).
+				until := day.AddDate(0, 0, 1).Format(time.RFC3339)
 				newEvents, err := opts.FetchEvents(since, until)
 				app.QueueUpdateDraw(func() {
 					fetchMu.Lock()
@@ -629,8 +629,8 @@ func RunMonthView(events *calendar.Events, opts MonthViewOptions) error {
 			curSel := selectedDate
 			go func() {
 				since := monthFirst.Format(time.RFC3339)
-				untilTime := monthFirst.AddDate(0, 1, 0).Add(-time.Nanosecond)
-				until := untilTime.Format(time.RFC3339)
+				// timeMax is exclusive: use the next month's midnight (DST-safe).
+				until := monthFirst.AddDate(0, 1, 0).Format(time.RFC3339)
 				newEvents, err := opts.FetchEvents(since, until)
 				app.QueueUpdateDraw(func() {
 					fetchMu.Lock()
@@ -804,19 +804,6 @@ func eventSortKey(ev *calendar.Event, loc *time.Location) string {
 		return ev.Start.DateTime
 	}
 	return ev.Start.Date
-}
-
-func formatHM(rfc3339 string, loc *time.Location) string {
-	if rfc3339 == "" {
-		return ""
-	}
-	if t, err := time.Parse(time.RFC3339, rfc3339); err == nil {
-		return t.In(loc).Format("15:04")
-	}
-	if len(rfc3339) >= 16 && rfc3339[10] == 'T' {
-		return rfc3339[11:16]
-	}
-	return ""
 }
 
 func formatEventDetail(ev *calendar.Event, loc *time.Location) string {

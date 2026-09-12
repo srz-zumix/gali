@@ -32,8 +32,8 @@ func NewEventsCmd() *cobra.Command {
 	}
 
 	f := cmd.Flags()
-	f.StringVar(&since, "since", "", "Start date (RFC3339 or YYYY-MM-DD)")
-	f.StringVar(&until, "until", "", "End date (RFC3339 or YYYY-MM-DD)")
+	f.StringVar(&since, "since", "", "Start date (YYYY-MM-DD)")
+	f.StringVar(&until, "until", "", "End date (YYYY-MM-DD)")
 	f.StringVar(&format, "format", "", "Output format (json or empty for text)")
 	f.BoolVarP(&showDeclined, "show-declined", "D", false, "Show declined events (yes or no)")
 	f.StringArrayVarP(&refIDs, "ref", "r", nil, "Reference calendar ID(s) for private event completion (can be specified multiple times)")

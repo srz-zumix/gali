@@ -16,7 +16,7 @@ func getTimeZone() string {
 	return tz
 }
 
-// ParseDate parses date string (RFC3339 or YYYY-MM-DD) with timezone
+// ParseDate parses a date string (YYYY-MM-DD) with timezone
 func ParseDate(s string) (time.Time, error) {
 	tz, err := time.LoadLocation(getTimeZone())
 	if err != nil {
@@ -44,7 +44,9 @@ func ParseSinceUntil(since, until string) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		untilTime := u.Add(23*time.Hour + 59*time.Minute)
+		// timeMax is exclusive: the day after `until` at midnight (DST-safe),
+		// so events on the `until` date itself are included.
+		untilTime := u.AddDate(0, 0, 1)
 		until = untilTime.Format(time.RFC3339)
 	}
 	return since, until, nil
@@ -54,7 +56,7 @@ func ParseSinceUntil(since, until string) (string, string, error) {
 func ParseWorkHours(s string) (time.Duration, time.Duration, error) {
 	parts := strings.Split(s, "-")
 	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid work-hours format (expected HH:MM-HH:MM): %s", s)
+		return 0, 0, fmt.Errorf("invalid work-hours format (expected HH:MM-HH:MM): %q", s)
 	}
 	start, err := parseClock(parts[0])
 	if err != nil {
@@ -65,7 +67,7 @@ func ParseWorkHours(s string) (time.Duration, time.Duration, error) {
 		return 0, 0, err
 	}
 	if end <= start {
-		return 0, 0, fmt.Errorf("work-hours end must be after start: %s", s)
+		return 0, 0, fmt.Errorf("work-hours end must be after start: %q", s)
 	}
 	return start, end, nil
 }
@@ -73,7 +75,7 @@ func ParseWorkHours(s string) (time.Duration, time.Duration, error) {
 func parseClock(s string) (time.Duration, error) {
 	t, err := time.Parse("15:04", strings.TrimSpace(s))
 	if err != nil {
-		return 0, fmt.Errorf("invalid time format (expected HH:MM): %s", s)
+		return 0, fmt.Errorf("invalid time format (expected HH:MM): %q", s)
 	}
 	return time.Duration(t.Hour())*time.Hour + time.Duration(t.Minute())*time.Minute, nil
 }

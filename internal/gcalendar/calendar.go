@@ -26,20 +26,13 @@ func ListCalendarListId(srv *calendar.Service) ([]string, error) {
 	return ids, nil
 }
 
-func GetIdMappedEvents(srv *calendar.Service, since, until string, calendarIDs ...string) []map[string]*calendar.Event {
+func GetIdMappedEvents(srv *calendar.Service, since, until string, showDeclined bool, calendarIDs ...string) []map[string]*calendar.Event {
 	getEvents := func(calID string) map[string]*calendar.Event {
 		events, err := ListEvents(srv, calID, since, until)
 		if err != nil {
 			log.Fatalf("Unable to retrieve events for %s: %v", calID, err)
 		}
-		m := make(map[string]*calendar.Event)
-		for _, item := range events.Items {
-			if GetSelfResponseStatus(item) == "declined" {
-				continue
-			}
-			m[item.Id] = item
-		}
-		return m
+		return mapEventsByID(events.Items, showDeclined)
 	}
 
 	calendars := make([]map[string]*calendar.Event, len(calendarIDs))
@@ -47,6 +40,19 @@ func GetIdMappedEvents(srv *calendar.Service, since, until string, calendarIDs .
 		calendars[i] = getEvents(calID)
 	}
 	return calendars
+}
+
+// mapEventsByID builds an ID→event map, skipping events the user has declined
+// unless showDeclined is true.
+func mapEventsByID(items []*calendar.Event, showDeclined bool) map[string]*calendar.Event {
+	m := make(map[string]*calendar.Event)
+	for _, item := range items {
+		if !showDeclined && GetSelfResponseStatus(item) == "declined" {
+			continue
+		}
+		m[item.Id] = item
+	}
+	return m
 }
 
 func ResolveCalendarIDAlias(srv *calendar.Service, calendarID string) string {

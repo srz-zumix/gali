@@ -25,8 +25,8 @@ func NewSuggestCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&since, "since", "", "Start date (RFC3339 or YYYY-MM-DD). Default: today")
-	f.StringVar(&until, "until", "", "End date (RFC3339 or YYYY-MM-DD). Default: today+7 days")
+	f.StringVar(&since, "since", "", "Start date (YYYY-MM-DD). Default: today")
+	f.StringVar(&until, "until", "", "End date (YYYY-MM-DD). Default: today+7 days")
 	f.StringVar(&format, "format", "", "Output format (json or empty for text)")
 	f.StringVar(&duration, "duration", "30m", "Required contiguous free duration (e.g. 30m, 1h)")
 	f.StringVar(&step, "step", "30m", "Slot search step (e.g. 15m, 30m)")

@@ -52,10 +52,10 @@ func runCalendarTUI(calendarID, month string, showDeclined bool) {
 	}
 
 	monthFirst := time.Date(base.Year(), base.Month(), 1, 0, 0, 0, 0, loc)
-	monthLast := monthFirst.AddDate(0, 1, 0).Add(-time.Nanosecond)
 
 	since := monthFirst.Format(time.RFC3339)
-	until := monthLast.Format(time.RFC3339)
+	// timeMax is exclusive: use the next month's midnight (DST-safe).
+	until := monthFirst.AddDate(0, 1, 0).Format(time.RFC3339)
 
 	events, err := gcalendar.ListEvents(srv, calendarID, since, until)
 	if err != nil {
