@@ -2,6 +2,7 @@ package render
 
 import (
 	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	admdir "google.golang.org/api/admin/directory/v1"
 )
 
@@ -11,10 +12,15 @@ func (r *Renderer) RenderCalendarResource(resources []*admdir.CalendarResource) 
 		return
 	}
 
-	table := tablewriter.NewWriter(r.IO.Out)
-	table.SetHeader([]string{"Name", "Email", "Building ID", "Description"})
-	table.SetAutoWrapText(false)
-	table.SetRowLine(true)
+	table := r.newTableWriter([]string{"Name", "Email", "Building ID", "Description"},
+		tablewriter.WithHeaderAutoWrap(tw.WrapNone),
+		tablewriter.WithRowAutoWrap(tw.WrapNone),
+		tablewriter.WithRendition(tw.Rendition{
+			Settings: tw.Settings{
+				Separators: tw.Separators{BetweenRows: tw.On},
+			},
+		}),
+	)
 
 	for _, resource := range resources {
 		row := []string{

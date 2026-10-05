@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/srz-zumix/gali/internal/gcalendar"
 )
 
@@ -45,8 +47,10 @@ func (r *Renderer) RenderCandidates(candidates []gcalendar.SlotCandidate) {
 	}
 
 	headers := []string{"DATE_TIME", "STATUS", "CONFLICTS"}
-	table := r.newTableWriter(headers)
-	table.SetAutoWrapText(false)
+	table := r.newTableWriter(headers,
+		tablewriter.WithHeaderAutoWrap(tw.WrapNone),
+		tablewriter.WithRowAutoWrap(tw.WrapNone),
+	)
 	for _, c := range candidates {
 		row := []string{
 			fmt.Sprintf("%s %s-%s", c.Start.Format("2006-01-02"), c.Start.Format("15:04"), c.End.Format("15:04")),

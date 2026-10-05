@@ -237,8 +237,8 @@ func ToRGB(c string) (int, int, int, error) {
 	return int(r), int(g), int(b), nil
 }
 
-func (r *Renderer) newTableWriter(header []string) *tablewriter.Table {
-	table := tablewriter.NewWriter(r.IO.Out)
-	table.SetHeader(header)
+func (r *Renderer) newTableWriter(header []string, options ...tablewriter.Option) *tablewriter.Table {
+	table := tablewriter.NewTable(r.IO.Out, options...)
+	table.Header(header)
 	return table
 }

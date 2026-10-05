@@ -5,6 +5,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/olekukonko/tablewriter"
+	"github.com/olekukonko/tablewriter/tw"
 	"github.com/srz-zumix/gali/internal/gcalendar"
 	"google.golang.org/api/calendar/v3"
 )
@@ -125,8 +127,10 @@ func (r *Renderer) RenderEvents(events *calendar.Events, headers []string) {
 		}
 	}
 	getter := NewEventFieldGetters()
-	table := r.newTableWriter(headers)
-	table.SetAutoWrapText(false)
+	table := r.newTableWriter(headers,
+		tablewriter.WithHeaderAutoWrap(tw.WrapNone),
+		tablewriter.WithRowAutoWrap(tw.WrapNone),
+	)
 	for _, event := range events.Items {
 		if !r.ShowDeclined {
 			if gcalendar.GetSelfResponseStatus(event) == "declined" {
