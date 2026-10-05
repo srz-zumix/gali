@@ -88,6 +88,20 @@ func NewEventFieldGetters() *EventFieldGetters {
 			},
 			"DESCRIPTION": func(e *calendar.Event) string { return e.Description },
 			"LOCATION":    func(e *calendar.Event) string { return e.Location },
+			"ATTENDEES": func(e *calendar.Event) string {
+				if len(e.Attendees) == 0 {
+					return ""
+				}
+				names := make([]string, len(e.Attendees))
+				for i, attendee := range e.Attendees {
+					if attendee.DisplayName != "" {
+						names[i] = attendee.DisplayName
+					} else {
+						names[i] = attendee.Email
+					}
+				}
+				return strings.Join(names, "\n")
+			},
 		},
 	}
 }
@@ -132,4 +146,8 @@ func (r *Renderer) RenderEvents(events *calendar.Events, headers []string) {
 // 既存のRenderEventsはデフォルトヘッダーで呼び出す
 func (r *Renderer) RenderEventsDefault(events *calendar.Events) {
 	r.RenderEvents(events, []string{"DATE_TIME", "SUMMARY"})
+}
+
+func (r *Renderer) RenderEventsWithAttendees(events *calendar.Events) {
+	r.RenderEvents(events, []string{"DATE_TIME", "SUMMARY", "ATTENDEES"})
 }
