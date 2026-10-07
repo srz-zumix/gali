@@ -14,6 +14,7 @@
 
 import { AWAY, MEETING, POLICY, classifyEvent } from "./classify.mjs";
 import { clipToDay, isBusyEvent, parseTimeToMinutes } from "./freebusy.mjs";
+import { eventKey } from "./ui/meetings.mjs";
 
 const DAY_MS = 86_400_000;
 
@@ -62,14 +63,6 @@ export function enumerateDays(since, until, { weekdaysOnly = true } = {}) {
         guard += 1;
     }
     return days;
-}
-
-// The same invitation can be serialized differently on each attendee's
-// calendar (`09:00+09:00` vs `00:00Z`), so the instant — not the raw string —
-// identifies an occurrence.
-function eventKey(event) {
-    const instant = new Date(event.start).getTime();
-    return `${event.uid || event.id}\u0000${Number.isNaN(instant) ? String(event.start) : instant}`;
 }
 
 /**
