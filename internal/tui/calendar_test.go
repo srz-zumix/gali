@@ -3,11 +3,39 @@ package tui
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/rivo/tview"
+	"github.com/srz-zumix/gali/internal/gcalendar"
 	"google.golang.org/api/calendar/v3"
 )
+
+func TestEventDetailCompletionSource(t *testing.T) {
+	source := "room[red]@example.com"
+	event := &calendar.Event{
+		Summary: "Meeting",
+		ExtendedProperties: &calendar.EventExtendedProperties{
+			Private: map[string]string{gcalendar.CompletedFromProperty: source},
+		},
+	}
+	detail := formatEventDetail(event, time.UTC)
+	if !strings.Contains(detail, "Completed from:") || !strings.Contains(detail, tview.Escape(source)) {
+		t.Fatalf("completion source missing or unescaped: %s", detail)
+	}
+	name := "Room [blue]"
+	event.ExtendedProperties.Private[gcalendar.CompletedFromNameProperty] = name
+	detail = formatEventDetail(event, time.UTC)
+	if !strings.Contains(detail, "[white::b]Completed from:[::-] "+tview.Escape(name)) ||
+		!strings.Contains(detail, "[white::b]Source calendar ID:[::-] "+tview.Escape(source)) {
+		t.Fatalf("calendar name or ID missing or unescaped: %s", detail)
+	}
+	event.ExtendedProperties = nil
+	if strings.Contains(formatEventDetail(event, time.UTC), "Completed from:") {
+		t.Fatal("uncompleted event has a completion source")
+	}
+}
 
 func TestGetEventSlots(t *testing.T) {
 	loc := time.FixedZone("JST", 9*60*60)

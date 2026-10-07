@@ -96,9 +96,65 @@ func TestCalendarResourceRowSeparators(t *testing.T) {
 		} else if betweenRows && line == headerSeparator && strings.TrimSpace(line) != "" {
 			separatorFound = true
 		}
+
 		previousLine = line
 	}
 	if !separatorFound {
 		t.Fatalf("missing separator between resource rows:\n%s", output)
+	}
+}
+
+func TestCompletedEventRendering(t *testing.T) {
+	for _, withAttendees := range []bool{false, true} {
+		for _, tc := range []struct {
+			name                  string
+			completed, declined   bool
+			showDeclined, visible bool
+			sourceName            string
+		}{
+			{"direct", false, false, false, false, ""},
+			{"completed", true, false, false, true, ""},
+			{"named", true, false, false, true, "Source calendar"},
+			{"declined hidden", true, true, false, false, ""},
+			{"declined visible", true, true, true, true, ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				event := &calendar.Event{
+					Summary: "Meeting",
+					Start:   &calendar.EventDateTime{Date: "2026-10-05"},
+					End:     &calendar.EventDateTime{Date: "2026-10-06"},
+				}
+				if tc.completed {
+					event.ExtendedProperties = &calendar.EventExtendedProperties{
+						Private: map[string]string{
+							gcalendar.CompletedFromProperty:     "source@example.com",
+							gcalendar.CompletedFromNameProperty: tc.sourceName,
+						},
+					}
+				}
+				if tc.declined {
+					event.Attendees = []*calendar.EventAttendee{{Self: true, ResponseStatus: "declined"}}
+				}
+				events := &calendar.Events{Items: []*calendar.Event{event}}
+				renderer := NewStringRenderer()
+				renderer.Renderer.ShowDeclined = tc.showDeclined
+				if withAttendees {
+					renderer.Renderer.RenderEventsWithAttendees(events)
+				} else {
+					renderer.Renderer.RenderEventsDefault(events)
+				}
+				output := renderer.Stdout.String()
+				if strings.Contains(output, "source@example.com") != (tc.visible && tc.sourceName == "") ||
+					strings.Contains(output, "COMPLETED") != tc.visible {
+					t.Fatalf("incorrect completion column:\n%s", output)
+				}
+				if tc.sourceName != "" && !strings.Contains(output, tc.sourceName) {
+					t.Fatalf("calendar name missing:\n%s", output)
+				}
+				if got := NewEventFieldGetters().GetField(event, "COMPLETED_FROM"); (got != "") != tc.completed {
+					t.Fatalf("incorrect completion getter: %q", got)
+				}
+			})
+		}
 	}
 }

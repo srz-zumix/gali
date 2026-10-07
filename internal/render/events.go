@@ -88,8 +88,10 @@ func NewEventFieldGetters() *EventFieldGetters {
 				}
 				return e.Summary
 			},
-			"DESCRIPTION": func(e *calendar.Event) string { return e.Description },
-			"LOCATION":    func(e *calendar.Event) string { return e.Location },
+			"DESCRIPTION":         func(e *calendar.Event) string { return e.Description },
+			"LOCATION":            func(e *calendar.Event) string { return e.Location },
+			"COMPLETED_FROM":      gcalendar.GetCompletionSourceCalendarID,
+			"COMPLETED_FROM_NAME": gcalendar.GetCompletionSourceCalendarLabel,
 			"ATTENDEES": func(e *calendar.Event) string {
 				if len(e.Attendees) == 0 {
 					return ""
@@ -149,9 +151,21 @@ func (r *Renderer) RenderEvents(events *calendar.Events, headers []string) {
 
 // 既存のRenderEventsはデフォルトヘッダーで呼び出す
 func (r *Renderer) RenderEventsDefault(events *calendar.Events) {
-	r.RenderEvents(events, []string{"DATE_TIME", "SUMMARY"})
+	r.RenderEvents(events, r.completionHeaders(events, []string{"DATE_TIME", "SUMMARY"}))
 }
 
 func (r *Renderer) RenderEventsWithAttendees(events *calendar.Events) {
-	r.RenderEvents(events, []string{"DATE_TIME", "SUMMARY", "ATTENDEES"})
+	r.RenderEvents(events, r.completionHeaders(events, []string{"DATE_TIME", "SUMMARY", "ATTENDEES"}))
+}
+
+func (r *Renderer) completionHeaders(events *calendar.Events, headers []string) []string {
+	for _, event := range events.Items {
+		if !r.ShowDeclined && gcalendar.GetSelfResponseStatus(event) == "declined" {
+			continue
+		}
+		if gcalendar.GetCompletionSourceCalendarID(event) != "" {
+			return append(headers, "COMPLETED_FROM_NAME")
+		}
+	}
+	return headers
 }

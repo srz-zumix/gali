@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ja">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>gali カレンダー</title>
+        <link rel="stylesheet" href="/app.css" />
+    </head>
+    <body>
+        <header class="toolbar">
+            <div class="row">
+                <div class="btn-group">
+                    <button type="button" data-nav="prev" title="前の期間">‹</button>
+                    <button type="button" data-nav="today">今日</button>
+                    <button type="button" data-nav="next" title="次の期間">›</button>
+                </div>
+                <h1 id="range-label">読み込み中…</h1>
+                <span class="grow"></span>
+                <div class="btn-group" id="view-group">
+                    <button type="button" data-view="day">1日</button>
+                    <button type="button" data-view="3days">3日</button>
+                    <button type="button" data-view="week">週</button>
+                </div>
+                <button type="button" id="refresh" title="gali で再取得">再取得</button>
+                <button type="button" id="toggle-adjust" aria-expanded="false">調整</button>
+                <button type="button" id="toggle-settings" aria-expanded="false">設定</button>
+            </div>
+
+            <div class="row chips" id="chips"></div>
+
+            <section class="panel" id="adjust" hidden>
+                <div class="inline adjust-controls">
+                    <label for="scan-duration">会議の長さ</label>
+                    <select id="scan-duration">
+                        <option value="15">15分</option>
+                        <option value="30" selected>30分</option>
+                        <option value="45">45分</option>
+                        <option value="60">60分</option>
+                        <option value="90">90分</option>
+                        <option value="120">120分</option>
+                    </select>
+                    <label for="scan-weeks">探索期間</label>
+                    <select id="scan-weeks">
+                        <option value="1">1週間</option>
+                        <option value="2">2週間</option>
+                        <option value="4" selected>4週間</option>
+                        <option value="6">6週間</option>
+                        <option value="8">8週間</option>
+                    </select>
+                    <button type="button" id="scan-btn">候補を探す</button>
+                    <button type="button" id="scan-force" title="キャッシュを使わず再取得">再取得して探す</button>
+                </div>
+                <p class="hint" id="scan-progress" hidden></p>
+
+                <div class="adjust-tabs btn-group" id="adjust-tabs">
+                    <button type="button" data-tab="candidates">候補</button>
+                    <button type="button" data-tab="blockers">ボトルネック</button>
+                    <button type="button" data-tab="shared">共有会議</button>
+                </div>
+
+                <div class="adjust-body">
+                    <div id="tab-candidates" class="tab-pane"></div>
+                    <div id="tab-blockers" class="tab-pane" hidden></div>
+                    <div id="tab-shared" class="tab-pane" hidden></div>
+                </div>
+            </section>
+
+            <section class="panel" id="settings" hidden>
+                <div class="field">
+                    <label for="add-input">カレンダーを追加（メールアドレス / カレンダー ID）</label>
+                    <div class="inline">
+                        <input
+                            id="add-input"
+                            list="calendar-options"
+                            type="text"
+                            placeholder="teammate@example.com"
+                            autocomplete="off"
+                        />
+                        <datalist id="calendar-options"></datalist>
+                        <button type="button" id="add-btn">追加</button>
+                    </div>
+                    <p class="hint" id="calendar-hint"></p>
+                </div>
+
+                <fieldset class="field">
+                    <legend>非公開予定の補完（gali の参照カレンダー）</legend>
+                    <label class="check"
+                        ><input type="checkbox" id="ref-mycals" /> 自分の全カレンダーを参照する（--ref-mycals）</label
+                    >
+                    <label class="check"
+                        ><input type="checkbox" id="show-diff" /> 補完された予定にバッジを付ける（補完元はホバー・詳細で確認）</label
+                    >
+                    <div class="inline">
+                        <input id="refs" type="text" placeholder="参照カレンダー ID（カンマ区切り, --ref）" />
+                    </div>
+                    <div class="inline">
+                        <input id="building" type="text" placeholder="建物 ID（会議室を参照, --building）" />
+                    </div>
+                </fieldset>
+
+                <fieldset class="field">
+                    <legend>表示</legend>
+                    <label class="check"><input type="checkbox" id="show-declined" /> 辞退した予定も表示する</label>
+                    <p class="hint">辞退した予定は薄く表示され、空き時間の計算には含めません。</p>
+                    <label class="check"><input type="checkbox" id="show-free" /> 共通の空き時間を表示する</label>
+                    <div class="inline">
+                        <label for="work-start">勤務時間</label>
+                        <input id="work-start" type="time" step="900" />
+                        <span>–</span>
+                        <input id="work-end" type="time" step="900" />
+                    </div>
+                </fieldset>
+
+                <fieldset class="field">
+                    <legend>空き探索</legend>
+                    <label class="check"><input type="checkbox" id="skip-holidays" /> 祝日を候補から除外する</label>
+                    <label class="check"
+                        ><input type="checkbox" id="skip-policy" /> ノーミーティング枠を候補から除外する</label
+                    >
+                    <label class="check"
+                        ><input type="checkbox" id="away-busy" /> 終日ブロックを「予定あり」として扱う</label
+                    >
+                    <label class="check"><input type="checkbox" id="weekdays-only" /> 平日のみ探索する</label>
+                    <div class="inline">
+                        <label for="holiday-cal">祝日カレンダー</label>
+                        <input id="holiday-cal" type="text" placeholder="en.japanese#holiday@group.v.calendar.google.com" />
+                    </div>
+                    <div class="inline">
+                        <label for="policy-patterns">ポリシー枠のタイトル</label>
+                        <input id="policy-patterns" type="text" placeholder="NoMTG, ノーミーティング" />
+                    </div>
+                </fieldset>
+
+                <p class="hint">
+                    設定は <code id="profile-label"></code> プロファイルとして保存され、次回開いたときも復元されます。
+                </p>
+            </section>
+
+            <div class="legend">
+                <span><i class="swatch solid"></i>詳細まで閲覧可</span>
+                <span><i class="swatch masked"></i>予定あり（詳細非公開）</span>
+                <span><i class="swatch free"></i>空き時間扱い</span>
+                <span
+                    title="相手のカレンダーの公開設定上、本来は見えないはずのタイトル。gali が自分の参照カレンダーから補完したと推定されるもの。"
+                    ><i class="swatch badge">補</i>参照カレンダーで補完（推定）</span
+                >
+            </div>
+
+            <p class="status" id="status"></p>
+        </header>
+
+        <main id="calendar-main">
+            <div id="grid" class="grid-wrap"></div>
+            <div
+                id="grid-resizer"
+                class="grid-resizer"
+                role="separator"
+                tabindex="0"
+                aria-label="カレンダー表示領域の高さ"
+                aria-orientation="horizontal"
+                aria-controls="grid"
+                aria-valuemin="180"
+                title="上下にドラッグして高さを変更（↑↓キーでも調整、ダブルクリックで自動サイズ）"
+            ></div>
+            <section id="free-slots" class="free-slots"></section>
+        </main>
+
+        <div id="popover" class="popover" hidden></div>
+
+        <script src="/app.js" type="module"></script>
+    </body>
+</html>

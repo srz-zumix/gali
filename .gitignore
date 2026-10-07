@@ -31,8 +31,8 @@ go.work.sum
 # .idea/
 # .vscode/
 
-gali
-gali.exe
+/gali
+/gali.exe
 
 credentials.json
 tmp/

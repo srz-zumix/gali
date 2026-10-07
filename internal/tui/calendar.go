@@ -823,6 +823,13 @@ func formatEventDetail(ev *calendar.Event, loc *time.Location) string {
 	}
 	fmt.Fprintf(&sb, "[yellow::b]%s[::-]\n\n", tview.Escape(summary))
 
+	if source := gcalendar.GetCompletionSourceCalendarID(ev); source != "" {
+		fmt.Fprintf(&sb, "[white::b]Completed from:[::-] %s\n", tview.Escape(gcalendar.GetCompletionSourceCalendarLabel(ev)))
+		if name := gcalendar.GetCompletionSourceCalendarName(ev); name != "" && name != source {
+			fmt.Fprintf(&sb, "[white::b]Source calendar ID:[::-] %s\n", tview.Escape(source))
+		}
+	}
+
 	// Time
 	if ev.Start != nil {
 		if ev.Start.DateTime != "" {

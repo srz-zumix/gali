@@ -8,14 +8,14 @@ import (
 	"google.golang.org/api/calendar/v3"
 )
 
-func GetReferenceMappedEvents(srv *calendar.Service, since, until string, refIDs []string, refMyCals bool, building string) (map[string]*calendar.Event, error) {
-	refEventMap := map[string]*calendar.Event{}
+func GetReferenceMappedEvents(srv *calendar.Service, since, until string, refIDs []string, refMyCals bool, building string) (map[string]ReferenceEvent, error) {
+	refEventMap := map[string]ReferenceEvent{}
 	ids := GetReferenceCalendarIDs(srv, refIDs, refMyCals, building)
 	if len(ids) > 0 {
 		var err error
 		refEventMap, err = GetUnionMappedEvents(srv, ids, since, until)
 		if err != nil {
-			log.Fatalf("Unable to retrieve events from ref calendars: %v", err)
+			return nil, err
 		}
 	}
 	return refEventMap, nil

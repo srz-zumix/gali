@@ -8,6 +8,7 @@ require (
 	github.com/olekukonko/tablewriter v1.1.5
 	github.com/rivo/tview v0.42.0
 	github.com/spf13/cobra v1.10.2
+	github.com/srz-zumix/go-gh-extension v0.6.24
 	golang.org/x/oauth2 v0.37.0
 	google.golang.org/api v0.300.0
 )
@@ -17,9 +18,13 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.3.0 // indirect
 	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
+	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0 // indirect
 	github.com/briandowns/spinner v1.23.2 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/cli/cli/v2 v2.97.0 // indirect
+	github.com/cli/go-gh/v2 v2.13.0 // indirect
 	github.com/cli/safeexec v1.0.1 // indirect
+	github.com/cli/shurcooL-graphql v0.0.4 // indirect
 	github.com/clipperhouse/displaywidth v0.11.0 // indirect
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect
 	github.com/fatih/color v1.19.0 // indirect
@@ -28,6 +33,10 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/goccy/go-json v0.11.2 // indirect
+	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
+	github.com/google/go-github/v88 v88.0.0 // indirect
+	github.com/google/go-github/v90 v90.0.0 // indirect
+	github.com/google/go-querystring v1.2.0 // indirect
 	github.com/google/s2a-go v0.1.11 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/google/uuid v1.6.0 // indirect
@@ -44,6 +53,8 @@ require (
 	github.com/olekukonko/errors v1.3.0 // indirect
 	github.com/olekukonko/ll v0.1.8 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/shurcooL/githubv4 v0.0.0-20240727222349-48295856cce7 // indirect
+	github.com/shurcooL/graphql v0.0.0-20230722043721-ed46e5a46466 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0 // indirect
@@ -59,4 +70,5 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260928230214-8a89bd6388cc // indirect
 	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
