@@ -4,18 +4,25 @@ import { test } from "node:test";
 import { createContext, Script } from "node:vm";
 
 import * as layout from "./ui/layout.mjs";
+import * as meetings from "./ui/meetings.mjs";
 
 const source = await readFile(new URL("./ui/app.js", import.meta.url), "utf8");
-const script = new Script(source.replace(/^import .+ from "\.\/layout\.mjs";\r?\n/m, ""), {
+const script = new Script(source.replace(/^import .+ from "\.\/(?:layout|meetings)\.mjs";\r?\n/gm, ""), {
     filename: "ui/app.js",
 });
 
 function createRenderer() {
     const elements = new Map();
+    const listeners = new Map();
+    const blocks = [];
     const context = createContext({
         ...layout,
+        ...meetings,
         document: {
-            addEventListener() {},
+            addEventListener(type, handler) {
+                if (!listeners.has(type)) listeners.set(type, []);
+                listeners.get(type).push(handler);
+            },
             getElementById(id) {
                 if (!elements.has(id)) {
                     elements.set(id, {
@@ -23,6 +30,7 @@ function createRenderer() {
                         style: {},
                         addEventListener() {},
                         querySelector() { return null; },
+                        querySelectorAll() { return blocks.filter((block) => block.dataset.shared); },
                         getBoundingClientRect() { return { width: 200, height: 100 }; },
                     });
                 }
@@ -56,6 +64,25 @@ function createRenderer() {
                 getBoundingClientRect() { return { left: 20, top: 20, bottom: 40 }; },
             });
             return elements.get("popover").innerHTML;
+        },
+        block(calendarId, eventId, groupNumber) {
+            const classes = new Set();
+            const block = {
+                dataset: { cal: calendarId, ev: eventId, ...(groupNumber ? { shared: String(groupNumber) } : {}) },
+                closest(selector) { return [".ev", "#grid .ev"].includes(selector) ? this : null; },
+                classList: {
+                    toggle(name, force) { if (force) classes.add(name); else classes.delete(name); },
+                    contains(name) { return classes.has(name); },
+                },
+            };
+            blocks.push(block);
+            return block;
+        },
+        dispatch(type, target, relatedTarget = null) {
+            for (const listener of listeners.get(type) || []) listener({ target, relatedTarget });
+        },
+        highlighted() {
+            return blocks.filter((block) => block.classList.contains("peer-highlight"));
         },
     };
 }
@@ -130,4 +157,137 @@ test("completion source appears in timed and all-day badges and details", () => 
         assert.ok(!renderer.eventMarkup(direct, calendar, settings).includes('class="badge"'));
         assert.ok(!renderer.details(direct, calendar).includes("補完元カレンダー"));
     }
+});
+
+function sharedData(allDay = false) {
+    const privateEvent = {
+        id: "meeting", uid: "meeting@example.com", summary: "Hidden private summary", detailsVisible: false, allDay,
+        start: allDay ? "2026-10-12" : "2026-10-12T18:00:00",
+        end: allDay ? "2026-10-13" : "2026-10-12T18:30:00",
+    };
+    const calendars = [
+        { id: "alice", label: "Alice", color: "#3f7ee8", events: [privateEvent] },
+        { id: "bob", label: 'Bob "<&>', color: "#3f7ee8", events: [{ ...privateEvent }] },
+    ];
+    return {
+        settings: { calendars, workStart: "09:00", workEnd: "18:00", showCompletionDiff: false },
+        snapshot: { calendars, range: { days: ["2026-10-12"] } },
+    };
+}
+
+test("matching private timed and all-day events have visible leading badges and reciprocal peer details", () => {
+    for (const allDay of [false, true]) {
+        const renderer = createRenderer();
+        const data = sharedData(allDay);
+        const [alice, bob] = data.snapshot.calendars;
+        const html = renderer.render(data);
+        assert.equal([...html.matchAll(/data-shared="1"/g)].length, 2);
+        assert.equal([...html.matchAll(/>同1<\/span>/g)].length, 2);
+        assert.ok(!html.includes("Hidden private summary"));
+        for (const owner of [alice, bob]) {
+            const markup = renderer.eventMarkup(owner.events[0], owner, data.settings);
+            assert.match(markup, /class="ev masked"/);
+            assert.match(markup, /class="shared-badge"[^>]*>同1<\/span>(?:<span class="t">.*?<\/span> )?予定あり（詳細非公開）/);
+            assert.ok(markup.includes("予定 ID / iCalUID・開始時刻が一致"));
+            const peerName = owner === alice ? "Bob &quot;&lt;&amp;&gt;" : "Alice";
+            assert.ok(markup.includes(`: ${peerName}`));
+            assert.ok(markup.includes('aria-label="同1'));
+            const details = renderer.details(owner.events[0], owner);
+            assert.ok(details.includes(`<dt>他のカレンダー</dt><dd>${peerName}</dd>`));
+            assert.ok(details.includes("<dt>同じ予定</dt>"));
+            assert.ok(!details.includes("Hidden private summary"));
+            assert.ok(!details.includes(bob.label));
+        }
+    }
+});
+
+test("a readable matching copy does not reveal its title on the private copy", () => {
+    const renderer = createRenderer();
+    const data = sharedData();
+    const [alice, bob] = data.snapshot.calendars;
+    bob.events[0] = { ...bob.events[0], summary: "Readable peer title", detailsVisible: true };
+    assert.ok(renderer.render(data).includes("Readable peer title"));
+    const privateMarkup = renderer.eventMarkup(alice.events[0], alice, data.settings);
+    assert.ok(privateMarkup.includes(">同1</span>"));
+    assert.ok(!privateMarkup.includes("Readable peer title"));
+    assert.ok(!renderer.details(alice.events[0], alice).includes("Readable peer title"));
+});
+
+test("minimum-height timed events use compact shared badges", () => {
+    const data = sharedData();
+    for (const calendar of data.snapshot.calendars) calendar.events[0].end = "2026-10-12T18:15:00";
+    const html = createRenderer().render(data);
+    assert.equal([...html.matchAll(/class="ev masked compact"/g)].length, 2);
+    assert.equal([...html.matchAll(/height:14px/g)].length, 2);
+    assert.equal([...html.matchAll(/>同1<\/span>/g)].length, 2);
+});
+
+test("shared markers coexist with completion badges and clear when a peer is removed", () => {
+    const renderer = createRenderer();
+    const data = sharedData();
+    const [alice, bob] = data.snapshot.calendars;
+    const event = alice.events[0];
+    Object.assign(event, { completed: true, completedFrom: "reference", completedFromName: "Reference" });
+    renderer.render(data);
+    let markup = renderer.eventMarkup(event, alice, { ...data.settings, showCompletionDiff: true });
+    assert.ok(markup.includes(">同1</span>"));
+    assert.ok(markup.includes(">補</span>"));
+    markup = renderer.eventMarkup(event, alice, data.settings);
+    assert.ok(markup.includes(">同1</span>"));
+    assert.ok(!markup.includes('class="badge"'));
+    bob.events[0].responseStatus = "declined";
+    renderer.render({ ...data, settings: { ...data.settings, showDeclined: true } });
+    assert.ok(!renderer.eventMarkup(event, alice, data.settings).includes('class="shared-badge"'));
+    bob.events[0].responseStatus = "";
+    renderer.render(data);
+    assert.ok(renderer.eventMarkup(event, alice, data.settings).includes('class="shared-badge"'));
+    renderer.render({
+        settings: { ...data.settings, calendars: [alice] },
+        snapshot: { ...data.snapshot, calendars: [alice] },
+    });
+    assert.ok(!renderer.eventMarkup(event, alice, data.settings).includes("data-shared"));
+    assert.ok(!renderer.details(event, alice).includes("<dt>他のカレンダー</dt>"));
+});
+
+test("pointer and keyboard interaction highlights only the matching group", () => {
+    const renderer = createRenderer();
+    const alice = renderer.block("alice", "a", 1);
+    const bob = renderer.block("bob", "a", 1);
+    const otherAlice = renderer.block("alice", "b", 2);
+    const otherBob = renderer.block("bob", "b", 2);
+    const child = { closest() { return alice; } };
+
+    renderer.dispatch("pointerover", child);
+    assert.deepEqual(renderer.highlighted(), [alice, bob]);
+    renderer.dispatch("pointerout", alice, child);
+    assert.deepEqual(renderer.highlighted(), [alice, bob]);
+    renderer.dispatch("pointerout", child, otherAlice);
+    assert.deepEqual(renderer.highlighted(), [otherAlice, otherBob]);
+    renderer.dispatch("pointerout", otherAlice);
+    assert.deepEqual(renderer.highlighted(), []);
+    renderer.dispatch("focusin", bob);
+    assert.deepEqual(renderer.highlighted(), [alice, bob]);
+    renderer.dispatch("focusout", bob, otherAlice);
+    assert.deepEqual(renderer.highlighted(), [otherAlice, otherBob]);
+    renderer.dispatch("focusout", otherAlice);
+    assert.deepEqual(renderer.highlighted(), []);
+
+    renderer.dispatch("focusin", alice);
+    renderer.dispatch("pointerover", otherBob);
+    assert.deepEqual(renderer.highlighted(), [otherAlice, otherBob]);
+    renderer.dispatch("pointerout", otherBob);
+    assert.deepEqual(renderer.highlighted(), [alice, bob]);
+    renderer.dispatch("focusout", alice);
+    assert.deepEqual(renderer.highlighted(), []);
+
+    const ordinary = renderer.block("alice", "ordinary");
+    renderer.dispatch("pointerover", ordinary);
+    renderer.dispatch("focusin", alice);
+    assert.deepEqual(renderer.highlighted(), [alice, bob]);
+    renderer.dispatch("pointerover", otherAlice);
+    assert.deepEqual(renderer.highlighted(), [otherAlice, otherBob]);
+    renderer.dispatch("focusin", bob);
+    assert.deepEqual(renderer.highlighted(), [alice, bob]);
+    renderer.dispatch("focusout", bob);
+    assert.deepEqual(renderer.highlighted(), []);
 });

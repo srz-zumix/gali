@@ -2,6 +2,7 @@
 // day/3-day/week grid of the calendars gali can see.
 
 import { HOUR_HEIGHT, MIN_GRID_HEIGHT, computeGeometry, clampGridHeight } from "./layout.mjs";
+import { buildSharedEventGroups, calendarEventKey } from "./meetings.mjs";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 const RESPONSE_LABELS = {
@@ -12,7 +13,10 @@ const RESPONSE_LABELS = {
 };
 
 const $ = (id) => document.getElementById(id);
-const state = { data: null, index: new Map(), whatIf: new Map(), scanId: null };
+const state = {
+    data: null, index: new Map(), whatIf: new Map(), scanId: null,
+    sharedEvents: new Map(), hoveredEvent: null, focusedEvent: null,
+};
 
 /* ---------------- helpers ---------------- */
 
@@ -152,6 +156,20 @@ function renderCompletionBadge(event, settings) {
     return `<span class="badge" title="${label}" aria-label="${label}">${event.completedFrom ? "補" : "補?"}</span>`;
 }
 
+function sharedPeers(group, calendar) {
+    return group.calendars.filter((member) => member.id !== calendar.id).map((member) => member.label).join("、");
+}
+
+function sharedLabel(group, calendar) {
+    return group ? `同${group.number}（予定 ID / iCalUID・開始時刻が一致）: ${sharedPeers(group, calendar)}` : "";
+}
+
+function renderSharedBadge(group, calendar) {
+    if (!group) return "";
+    const label = escapeHtml(sharedLabel(group, calendar));
+    return `<span class="shared-badge" title="${label}" aria-label="${label}">同${group.number}</span>`;
+}
+
 function renderEventBlock(placed, calendar, geometry, settings) {
     const { event, startMin, endMin, lane, laneCount } = placed;
     const top = ((startMin - geometry.startMinute) / 60) * HOUR_HEIGHT;
@@ -163,13 +181,16 @@ function renderEventBlock(placed, calendar, geometry, settings) {
 
     const title = event.detailsVisible ? event.summary : "予定あり（詳細非公開）";
     const badge = renderCompletionBadge(event, settings);
+    const shared = state.sharedEvents.get(calendarEventKey(calendar.id, event.id));
+    if (shared && height < 18) classes.push("compact");
     const timeText = `${placed.continuesBefore ? "…" : ""}${hhmm(startMin)}${placed.continuesAfter ? "…" : ""}`;
 
     return `<button type="button" class="${classes.join(" ")}"
         style="top:${top}px;height:${height}px;left:${(lane / laneCount) * 100}%;width:${100 / laneCount}%;--ev-color:${calendar.color};--ev-fill:${hexToRgba(calendar.color, 0.22)}"
         data-cal="${escapeHtml(calendar.id)}" data-ev="${escapeHtml(event.id)}"
-        title="${escapeHtml(`${hhmm(startMin)}-${hhmm(endMin)} ${title}${event.completed ? `\n${completionLabel(event)}` : ""}`)}"
-        ><span class="t">${escapeHtml(timeText)}</span> ${escapeHtml(title)}${badge}</button>`;
+        ${shared ? `data-shared="${shared.number}"` : ""}
+        title="${escapeHtml(`${hhmm(startMin)}-${hhmm(endMin)} ${title}${event.completed ? `\n${completionLabel(event)}` : ""}${shared ? `\n${sharedLabel(shared, calendar)}` : ""}`)}"
+        >${renderSharedBadge(shared, calendar)}<span class="t">${escapeHtml(timeText)}</span> ${escapeHtml(title)}${badge}</button>`;
 }
 
 function renderAllDay(event, calendar, settings) {
@@ -178,17 +199,22 @@ function renderAllDay(event, calendar, settings) {
     if (event.responseStatus === "declined") classes.push("declined");
     const title = event.detailsVisible ? event.summary : "予定あり（詳細非公開）";
     const badge = renderCompletionBadge(event, settings);
+    const shared = state.sharedEvents.get(calendarEventKey(calendar.id, event.id));
     return `<button type="button" class="${classes.join(" ")}"
         style="--ev-color:${calendar.color};--ev-fill:${hexToRgba(calendar.color, 0.22)}"
         data-cal="${escapeHtml(calendar.id)}" data-ev="${escapeHtml(event.id)}"
-        title="${escapeHtml(`${title}${event.completed ? `\n${completionLabel(event)}` : ""}`)}"
-        >${escapeHtml(title)}${badge}</button>`;
+        ${shared ? `data-shared="${shared.number}"` : ""}
+        title="${escapeHtml(`${title}${event.completed ? `\n${completionLabel(event)}` : ""}${shared ? `\n${sharedLabel(shared, calendar)}` : ""}`)}"
+        >${renderSharedBadge(shared, calendar)}${escapeHtml(title)}${badge}</button>`;
 }
 
 function renderGrid(data) {
     const grid = $("grid");
     const snapshot = data.snapshot;
     const settings = data.settings;
+    state.sharedEvents = buildSharedEventGroups(snapshot?.calendars || []);
+    state.hoveredEvent = null;
+    state.focusedEvent = null;
 
     if (!settings.calendars.length) {
         grid.innerHTML =
@@ -569,7 +595,7 @@ function apply(data) {
     state.data = data;
     state.index = new Map();
     for (const calendar of (data.snapshot && data.snapshot.calendars) || []) {
-        for (const event of calendar.events) state.index.set(`${calendar.id}\u0000${event.id}`, { calendar, event });
+        for (const event of calendar.events) state.index.set(calendarEventKey(calendar.id, event.id), { calendar, event });
     }
     $("range-label").textContent = formatRange(data.range || (data.snapshot && data.snapshot.range));
     $("refresh").disabled = Boolean(data.loading);
@@ -678,7 +704,8 @@ new ResizeObserver(renderGridHeight).observe($("calendar-main"));
 /* ---------------- popover ---------------- */
 
 function showPopover(target) {
-    const entry = state.index.get(`${target.dataset.cal}\u0000${target.dataset.ev}`);
+    const key = calendarEventKey(target.dataset.cal, target.dataset.ev);
+    const entry = state.index.get(key);
     if (!entry) return;
     const { calendar, event } = entry;
     const rows = [];
@@ -697,6 +724,11 @@ function showPopover(target) {
         );
     }
     push("カレンダー", calendar.label);
+    const shared = state.sharedEvents.get(key);
+    if (shared) {
+        push("同じ予定", `同${shared.number}（予定 ID / iCalUID・開始時刻が一致）`);
+        push("他のカレンダー", sharedPeers(shared, calendar));
+    }
     push("場所", event.location);
     push("主催者", event.organizer);
     if (event.attendeeCount) push("参加者", `${event.attendeeCount} 名`);
@@ -728,6 +760,30 @@ const hidePopover = () => {
 };
 
 /* ---------------- wiring ---------------- */
+
+function highlightSharedEvents() {
+    const number = (state.hoveredEvent || state.focusedEvent)?.dataset.shared;
+    for (const block of $("grid").querySelectorAll(".ev[data-shared]")) {
+        block.classList.toggle("peer-highlight", Boolean(number && block.dataset.shared === number));
+    }
+}
+
+const gridEventTarget = (target) => target?.closest?.("#grid .ev") || null;
+for (const [type, field, leaving] of [
+    ["pointerover", "hoveredEvent", false],
+    ["pointerout", "hoveredEvent", true],
+    ["focusin", "focusedEvent", false],
+    ["focusout", "focusedEvent", true],
+]) {
+    document.addEventListener(type, (event) => {
+        const block = gridEventTarget(leaving ? event.relatedTarget : event.target);
+        if (state[field] === block) return;
+        state[field] = block;
+        // Keyboard navigation takes precedence over a stationary pointer.
+        if (field === "focusedEvent" && !leaving && block) state.hoveredEvent = null;
+        highlightSharedEvents();
+    });
+}
 
 async function loadCalendarOptions() {
     try {

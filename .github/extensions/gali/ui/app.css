@@ -522,6 +522,30 @@ td.daystart {
     margin-left: 3px;
 }
 
+.ev .shared-badge {
+    display: inline-block;
+    vertical-align: top;
+    white-space: nowrap;
+    border: 1px solid var(--true-color-blue, #0969da);
+    color: var(--true-color-blue, #0969da);
+    background: var(--background-color-default, #ffffff);
+    border-radius: 3px;
+    padding: 0 2px;
+    font-size: 10px;
+    line-height: 12px;
+    margin-right: 3px;
+}
+
+.ev.compact .shared-badge {
+    font-size: 8px;
+    line-height: 8px;
+}
+
+.ev.peer-highlight {
+    box-shadow: inset 0 0 0 2px var(--color-focus-outline, #3f7ee8);
+    z-index: 3;
+}
+
 /* ---------- free slots ---------- */
 
 .free-slots {
