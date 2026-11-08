@@ -5,9 +5,14 @@ import { HOUR_HEIGHT, MIN_GRID_HEIGHT, computeGeometry, clampGridHeight } from "
 import { buildSharedEventGroups, calendarEventKey } from "./meetings.mjs";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
-const CALENDAR_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
+const CALENDAR_WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 const MIN_ANCHOR_DATE = "0101-01-01";
 const MAX_ANCHOR_DATE = "9998-12-31";
+const SHARED_COLORS = [
+    "#0969da", "#bc4c00", "#1a7f37", "#8250df", "#bf3989",
+    "#087e8b", "#9a6700", "#cf222e", "#6f42c1", "#218b93",
+];
+const SHARING_BUSY_COLOR = "#6e7781";
 const RESPONSE_LABELS = {
     accepted: "参加",
     declined: "辞退",
@@ -21,6 +26,7 @@ const state = {
     sharedEvents: new Map(), hoveredEvent: null, focusedEvent: null,
     presetBusy: false, calendarDrag: null, orderQueue: Promise.resolve(), orderFailures: 0,
     dateAnchor: null, datePending: null, dateCalendar: null,
+    shareLatched: false, sharePending: false, shareFailure: null,
 };
 
 /* ---------------- helpers ---------------- */
@@ -30,6 +36,14 @@ const escapeHtml = (value) =>
         /[&<>"']/g,
         (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char],
     );
+
+function sharingMode(settings = state.data?.settings) {
+    return state.shareLatched || Boolean(settings?.shareMode);
+}
+
+function errorDetail(error, settings) {
+    return sharingMode(settings) ? "共有モード中のため詳細は非表示です。" : String(error?.message || error);
+}
 
 function hexToRgba(hex, alpha) {
     const value = String(hex || "").replace("#", "");
@@ -133,13 +147,13 @@ async function commitDateSelection(selected) {
         state.datePending = null;
         renderDatePicker(state.data);
         if (payload.error && selectedAnchor(payload) !== selected) {
-            datePickerError(`日付を変更できませんでした: ${payload.error}`);
+            datePickerError(`日付を変更できませんでした: ${errorDetail(payload.error)}`);
         }
     } catch (error) {
         if (state.datePending !== request) return;
         state.datePending = null;
         renderDatePicker(state.data);
-        datePickerError(`日付を変更できませんでした: ${error.message || error}`);
+        datePickerError(`日付を変更できませんでした: ${errorDetail(error)}`);
     }
 }
 
@@ -163,7 +177,7 @@ function renderDateCalendar({ focusDay = true } = {}) {
     if (!calendar) return;
     const [year, month] = calendar.focus.split("-").map(Number);
     const first = new Date(Date.UTC(year, month - 1, 1));
-    const leading = (first.getUTCDay() + 6) % 7;
+    const leading = first.getUTCDay();
     const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
     const today = localDate(new Date());
     const rows = [];
@@ -224,7 +238,7 @@ function openDateCalendar() {
         $("date-calendar").showModal();
     } catch (error) {
         state.dateCalendar = null;
-        datePickerError(`カレンダーを開けませんでした: ${error.message || error}`);
+        datePickerError(`カレンダーを開けませんでした: ${errorDetail(error)}`);
         return;
     }
     $("date-picker-toggle").setAttribute("aria-expanded", "true");
@@ -268,7 +282,7 @@ function moveCalendar(input) {
             }
         } catch (error) {
             state.orderFailures += 1;
-            calendarOrderMessage(`並び替えに失敗しました: ${error.message || error}`, true);
+            calendarOrderMessage(`並び替えに失敗しました: ${errorDetail(error)}`, true);
         }
     });
 }
@@ -297,7 +311,7 @@ async function postPreset(path, body) {
         };
         return await (orderSensitive ? enqueueCalendarOperation(operation) : operation());
     } catch (error) {
-        presetMessage(`プリセットを操作できませんでした: ${error.message || error}`, true);
+        presetMessage(`プリセットを操作できませんでした: ${errorDetail(error)}`, true);
         return null;
     } finally {
         state.presetBusy = false;
@@ -374,6 +388,91 @@ function visibleEvents(calendar, settings) {
     return calendar.events.filter((event) => settings.showDeclined || event.responseStatus !== "declined");
 }
 
+function timedEventHeight(placed) {
+    return Math.max(14, ((placed.endMin - placed.startMin) / 60) * HOUR_HEIGHT - 2);
+}
+
+function effectiveEventEnd(event) {
+    if (event.allDay) {
+        const value = event.end || event.start;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+        const date = new Date(`${value}T00:00:00Z`);
+        if (Number.isNaN(date.getTime()) || dateCalendarISO(date) !== value) return null;
+        if (!event.end) date.setUTCDate(date.getUTCDate() + 1);
+        return dateCalendarISO(date);
+    }
+    const end = event.end ? new Date(event.end).getTime() : new Date(event.start).getTime() + 30 * 60_000;
+    return Number.isNaN(end) ? null : end;
+}
+
+function connectableTimed(items) {
+    const overlapping = new Set();
+    let active = [];
+    for (const item of items) {
+        const top = (item.startMin / 60) * HOUR_HEIGHT;
+        const bottom = top + timedEventHeight(item);
+        // Minimum-height blocks can overlap lanes from a cluster with different widths.
+        // Ignore floating-point noise where block edges just touch.
+        active = active.filter((other) => other.bottom > top + 1e-7);
+        const left = item.lane / item.laneCount;
+        const right = (item.lane + 1) / item.laneCount;
+        for (const other of active) {
+            if (left < other.right && other.left < right) {
+                overlapping.add(item);
+                overlapping.add(other.item);
+            }
+        }
+        active.push({ item, bottom, left, right });
+    }
+    const edges = { left: new Set(), right: new Set() };
+    for (const item of items) {
+        if (overlapping.has(item)) continue;
+        if (item.lane === 0) edges.left.add(item);
+        if (item.lane === item.laneCount - 1) edges.right.add(item);
+    }
+    return edges;
+}
+
+function connectAdjacentEvents(columns) {
+    const sharedGroup = (column, event) => state.sharedEvents.get(calendarEventKey(column.calendar.id, event.id));
+    const timedEdges = columns.map((column) => connectableTimed(column.placed));
+    const sameEnd = (left, right) => {
+        const end = effectiveEventEnd(left);
+        return end !== null && end === effectiveEventEnd(right);
+    };
+
+    for (let index = 0; index + 1 < columns.length; index += 1) {
+        const left = columns[index];
+        const right = columns[index + 1];
+        if (left.day !== right.day) continue;
+
+        const rightGroups = new Map();
+        right.placed.forEach((item) => {
+            const group = sharedGroup(right, item.event);
+            if (group && timedEdges[index + 1].left.has(item)) rightGroups.set(group, item);
+        });
+        left.placed.forEach((item) => {
+            if (!timedEdges[index].right.has(item)) return;
+            const group = sharedGroup(left, item.event);
+            const peer = group && rightGroups.get(group);
+            if (!peer || item.startMin !== peer.startMin || item.endMin !== peer.endMin
+                || !sameEnd(item.event, peer.event)) return;
+            item.joinRight = true;
+            peer.joinLeft = true;
+        });
+
+        for (let row = 0; row < Math.min(left.allDay.length, right.allDay.length); row += 1) {
+            const item = left.allDay[row];
+            const peer = right.allDay[row];
+            const group = sharedGroup(left, item.event);
+            if (group && group === sharedGroup(right, peer.event) && sameEnd(item.event, peer.event)) {
+                item.joinRight = true;
+                peer.joinLeft = true;
+            }
+        }
+    }
+}
+
 /* ---------------- rendering ---------------- */
 
 function completionLabel(event) {
@@ -396,55 +495,100 @@ function sharedLabel(group, calendar) {
     return group ? `同${group.number}（予定 ID / iCalUID・開始時刻が一致）: ${sharedPeers(group, calendar)}` : "";
 }
 
-function renderSharedBadge(group, calendar) {
+function renderSharedBadge(group, calendar, sharing = false) {
     if (!group) return "";
-    const label = escapeHtml(sharedLabel(group, calendar));
+    const label = escapeHtml(sharing ? `同${group.number}（共通予定）` : sharedLabel(group, calendar));
     return `<span class="shared-badge" title="${label}" aria-label="${label}">同${group.number}</span>`;
+}
+
+function eventColor(calendar, group, sharing) {
+    if (!sharing) return calendar.color;
+    return group ? SHARED_COLORS[(group.number - 1) % SHARED_COLORS.length] : SHARING_BUSY_COLOR;
+}
+
+function sharingEventTooltip(time, group, event) {
+    return `${time} 予定あり${group ? ` 同${group.number}` : ""}${event.responseStatus === "declined" ? "（辞退）" : ""}`;
 }
 
 function renderEventBlock(placed, calendar, geometry, settings) {
     const { event, startMin, endMin, lane, laneCount } = placed;
     const top = ((startMin - geometry.startMinute) / 60) * HOUR_HEIGHT;
-    const height = Math.max(14, ((endMin - startMin) / 60) * HOUR_HEIGHT - 2);
+    const height = timedEventHeight(placed);
     const classes = ["ev"];
-    if (!event.detailsVisible) classes.push("masked");
-    if (event.transparency === "transparent") classes.push("transparent");
+    const sharing = sharingMode(settings);
+    if (sharing) classes.push("sharing");
+    else {
+        if (!event.detailsVisible) classes.push("masked");
+        if (event.transparency === "transparent") classes.push("transparent");
+    }
     if (event.responseStatus === "declined") classes.push("declined");
 
-    const title = event.detailsVisible ? event.summary : "予定あり（詳細非公開）";
-    const badge = renderCompletionBadge(event, settings);
+    const title = sharing ? "予定あり" : event.detailsVisible ? event.summary : "予定あり（詳細非公開）";
+    const badge = sharing ? "" : renderCompletionBadge(event, settings);
     const shared = state.sharedEvents.get(calendarEventKey(calendar.id, event.id));
+    const color = eventColor(calendar, shared, sharing);
     if (shared && height < 18) classes.push("compact");
+    if (placed.joinLeft) classes.push("join-left");
+    if (placed.joinRight) classes.push("join-right");
+    const left = `${(lane / laneCount) * 100}%`;
+    const width = `${100 / laneCount}%`;
+    const extraWidth = Number(Boolean(placed.joinLeft)) + Number(Boolean(placed.joinRight));
+    const positionedLeft = placed.joinLeft ? `calc(${left} - 1px)` : left;
+    const positionedWidth = extraWidth ? `calc(${width} + ${extraWidth}px)` : width;
     const timeText = `${placed.continuesBefore ? "…" : ""}${hhmm(startMin)}${placed.continuesAfter ? "…" : ""}`;
+    const timeRange = `${hhmm(startMin)}–${hhmm(endMin)}`;
+    const tooltip = sharing
+        ? sharingEventTooltip(timeRange, shared, event)
+        : `${hhmm(startMin)}-${hhmm(endMin)} ${title}${event.completed ? `\n${completionLabel(event)}` : ""}${shared ? `\n${sharedLabel(shared, calendar)}` : ""}`;
+    const identity = sharing
+        ? `data-share-time="${escapeHtml(timeRange)}" aria-label="${escapeHtml(tooltip)}"`
+        : `data-cal="${escapeHtml(calendar.id)}" data-ev="${escapeHtml(event.id)}"`;
 
     return `<button type="button" class="${classes.join(" ")}"
-        style="top:${top}px;height:${height}px;left:${(lane / laneCount) * 100}%;width:${100 / laneCount}%;--ev-color:${calendar.color};--ev-fill:${hexToRgba(calendar.color, 0.22)}"
-        data-cal="${escapeHtml(calendar.id)}" data-ev="${escapeHtml(event.id)}"
+        style="top:${top}px;height:${height}px;left:${positionedLeft};width:${positionedWidth};--ev-color:${color};--ev-fill:${hexToRgba(color, 0.22)}"
+        ${identity}
         ${shared ? `data-shared="${shared.number}"` : ""}
-        title="${escapeHtml(`${hhmm(startMin)}-${hhmm(endMin)} ${title}${event.completed ? `\n${completionLabel(event)}` : ""}${shared ? `\n${sharedLabel(shared, calendar)}` : ""}`)}"
-        >${renderSharedBadge(shared, calendar)}<span class="t">${escapeHtml(timeText)}</span> ${escapeHtml(title)}${badge}</button>`;
+        title="${escapeHtml(tooltip)}"
+        >${renderSharedBadge(shared, calendar, sharing)}<span class="t">${escapeHtml(timeText)}</span> ${escapeHtml(title)}${badge}</button>`;
 }
 
-function renderAllDay(event, calendar, settings) {
+function renderAllDay(event, calendar, settings, placement = {}) {
     const classes = ["ev"];
-    if (!event.detailsVisible) classes.push("masked");
+    const sharing = sharingMode(settings);
+    if (sharing) classes.push("sharing");
+    else {
+        if (!event.detailsVisible) classes.push("masked");
+    }
     if (event.responseStatus === "declined") classes.push("declined");
-    const title = event.detailsVisible ? event.summary : "予定あり（詳細非公開）";
-    const badge = renderCompletionBadge(event, settings);
+    if (placement.joinLeft) classes.push("join-left");
+    if (placement.joinRight) classes.push("join-right");
+    const title = sharing ? "予定あり" : event.detailsVisible ? event.summary : "予定あり（詳細非公開）";
+    const badge = sharing ? "" : renderCompletionBadge(event, settings);
     const shared = state.sharedEvents.get(calendarEventKey(calendar.id, event.id));
+    const color = eventColor(calendar, shared, sharing);
+    const tooltip = sharing
+        ? sharingEventTooltip("終日", shared, event)
+        : `${title}${event.completed ? `\n${completionLabel(event)}` : ""}${shared ? `\n${sharedLabel(shared, calendar)}` : ""}`;
+    const identity = sharing
+        ? `data-share-time="終日" aria-label="${escapeHtml(tooltip)}"`
+        : `data-cal="${escapeHtml(calendar.id)}" data-ev="${escapeHtml(event.id)}"`;
     return `<button type="button" class="${classes.join(" ")}"
-        style="--ev-color:${calendar.color};--ev-fill:${hexToRgba(calendar.color, 0.22)}"
-        data-cal="${escapeHtml(calendar.id)}" data-ev="${escapeHtml(event.id)}"
+        style="--ev-color:${color};--ev-fill:${hexToRgba(color, 0.22)}"
+        ${identity}
         ${shared ? `data-shared="${shared.number}"` : ""}
-        title="${escapeHtml(`${title}${event.completed ? `\n${completionLabel(event)}` : ""}${shared ? `\n${sharedLabel(shared, calendar)}` : ""}`)}"
-        >${renderSharedBadge(shared, calendar)}${escapeHtml(title)}${badge}</button>`;
+        title="${escapeHtml(tooltip)}"
+        >${renderSharedBadge(shared, calendar, sharing)}${escapeHtml(title)}${badge}</button>`;
 }
 
 function renderGrid(data) {
     const grid = $("grid");
     const snapshot = data.snapshot;
     const settings = data.settings;
-    state.sharedEvents = buildSharedEventGroups(snapshot?.calendars || []);
+    const calendars = (snapshot?.calendars || []).map((calendar) => ({
+        ...calendar,
+        events: visibleEvents(calendar, settings),
+    }));
+    state.sharedEvents = buildSharedEventGroups(calendars);
     state.hoveredEvent = null;
     state.focusedEvent = null;
 
@@ -458,14 +602,13 @@ function renderGrid(data) {
         return;
     }
 
-    const calendars = snapshot.calendars;
     const days = snapshot.range.days;
     const today = localDate(new Date());
 
     const columns = [];
     for (const day of days) {
         for (const calendar of calendars) {
-            const events = visibleEvents(calendar, settings);
+            const events = calendar.events;
             const timed = [];
             for (const event of events) {
                 if (event.allDay) continue;
@@ -476,10 +619,12 @@ function renderGrid(data) {
                 day,
                 calendar,
                 placed: assignLanes(timed),
-                allDay: events.filter((event) => event.allDay && coversDay(event, day)),
+                allDay: events.filter((event) => event.allDay && coversDay(event, day)).map((event) => ({ event })),
             });
         }
     }
+    const sharing = sharingMode(settings);
+    if (sharing) connectAdjacentEvents(columns);
 
     const geometry = computeGeometry(settings);
     const showOwners = calendars.length > 1;
@@ -505,14 +650,39 @@ function renderGrid(data) {
               .join("")}</tr>`
         : "";
 
-    const allDayCells = columns
-        .map(
-            (column, index) =>
-                `<td class="${index % calendars.length === 0 ? "daystart" : ""}"><div class="allday">${column.allDay
-                    .map((event) => renderAllDay(event, column.calendar, settings))
-                    .join("")}</div></td>`,
-        )
-        .join("");
+    const splitAllDay = sharing && columns.some((column) =>
+        column.allDay.length > 1 && column.allDay.some((item) => item.joinLeft || item.joinRight));
+    const maxAllDay = columns.reduce((count, column) => Math.max(count, column.allDay.length), 0);
+    const allDaySegments = [];
+    if (splitAllDay) {
+        const joinedRows = new Set();
+        for (const column of columns) {
+            column.allDay.forEach((item, index) => {
+                if (item.joinLeft || item.joinRight) joinedRows.add(index);
+            });
+        }
+        let start = 0;
+        for (const row of [...joinedRows].sort((a, b) => a - b)) {
+            if (start < row) allDaySegments.push([start, row]);
+            allDaySegments.push([row, row + 1]);
+            start = row + 1;
+        }
+        if (start < maxAllDay) allDaySegments.push([start, maxAllDay]);
+    } else {
+        allDaySegments.push([0, maxAllDay]);
+    }
+    const allDayRows = allDaySegments.map(([start, end], row) => {
+        const cells = columns
+            .map((column, index) => {
+                const placements = column.allDay.slice(start, end);
+                return `<td class="${index % calendars.length === 0 ? "daystart" : ""}"><div class="allday">${placements
+                    .map((placement) => renderAllDay(placement.event, column.calendar, settings, placement))
+                    .join("")}</div></td>`;
+            })
+            .join("");
+        const last = row === allDaySegments.length - 1 ? " allday-last" : "";
+        return `<tr class="allday-row${last}"><td class="gutter"><div class="allday"></div></td>${cells}</tr>`;
+    }).join("");
 
     const hourLabels = [];
     for (let hour = geometry.startHour; hour <= geometry.endHour; hour += 1) {
@@ -556,7 +726,7 @@ function renderGrid(data) {
             ${ownerHeaders}
         </thead>
         <tbody>
-            <tr><td class="gutter"><div class="allday"></div></td>${allDayCells}</tr>
+            ${allDayRows}
             <tr><td class="gutter"><div class="hours" style="height:${geometry.height}px">${hourLabels.join("")}</div></td>${bodyCells}</tr>
         </tbody>
     </table>`;
@@ -597,6 +767,7 @@ function renderFreeSlots(data) {
 function renderChips(data) {
     const chips = $("chips");
     const snapshot = data.snapshot;
+    const sharing = sharingMode(data.settings);
     const active = document.activeElement;
     const focused = active?.dataset?.moveCalendar
         ? { id: active.dataset.moveCalendar, direction: active.dataset.direction }
@@ -612,7 +783,7 @@ function renderChips(data) {
             const label = (found && found.label) || entry.label || entry.id;
             let meta = "";
             if (found && found.error) meta = '<span class="meta error">取得エラー</span>';
-            else if (found) {
+            else if (found && !sharing) {
                 const hidden = found.stats.hidden ? ` / 非公開 ${found.stats.hidden}` : "";
                 const declined = found.stats.declined
                     ? ` / 辞退 ${found.stats.declined}${data.settings.showDeclined ? "" : "（非表示）"}`
@@ -627,7 +798,7 @@ function renderChips(data) {
                         aria-label="${escapeHtml(`${label}を右へ移動`)}" title="右へ移動" ${index === entries.length - 1 ? "disabled" : ""}>→</button>
                 </span>`
                 : "";
-            return `<span class="chip" title="${escapeHtml(`${entry.id}${found && found.error ? `\n${found.error}` : ""}`)}">
+            return `<span class="chip" title="${escapeHtml(`${entry.id}${found && found.error ? `\n${errorDetail(found.error, data.settings)}` : ""}`)}">
                 <i class="dot" style="background:${color}"></i>
                 <span class="name">${escapeHtml(label)}</span>${meta}${controls}
                 <button type="button" data-remove="${escapeHtml(entry.id)}" title="削除">×</button>
@@ -670,7 +841,27 @@ function renderPresets(data) {
         : "プリセットを選択するとメンバーを確認できます。";
     const error = $("preset-store-error");
     error.hidden = !data.presetError;
-    error.textContent = data.presetError || "";
+    error.textContent = data.presetError
+        ? `${sharingMode(data.settings) ? "プリセットの読み込みに失敗しました: " : ""}${errorDetail(data.presetError, data.settings)}`
+        : "";
+}
+
+function renderSharing(data) {
+    const sharing = sharingMode(data.settings);
+    const unsaved = sharing && !data.settings.shareMode && !state.sharePending;
+    const warning = state.shareFailure?.message || (unsaved
+        ? "保存された共有モードは解除されています。この画面では予定を隠していますが、再読込すると表示されます。"
+        : "");
+    const toggle = $("toggle-share");
+    toggle.disabled = state.sharePending;
+    toggle.setAttribute("aria-pressed", String(sharing));
+    toggle.title = sharing ? "予定の内容を隠しています" : "予定の内容を隠して共有します";
+    $("normal-legend").hidden = sharing;
+    $("share-legend").hidden = !sharing;
+    $("share-mode-error").hidden = !warning;
+    $("share-mode-error-text").textContent = warning;
+    $("retry-share-mode").hidden = !state.shareFailure;
+    $("retry-share-mode").disabled = state.sharePending;
 }
 
 function renderSettings(data) {
@@ -695,6 +886,7 @@ function renderSettings(data) {
     assign("policy-patterns", (settings.policyPatterns || []).join(", "));
     assign("scan-duration", String(settings.slotMinutes));
     assign("scan-weeks", String(settings.scanWeeks));
+    $("policy-pattern-field").hidden = sharingMode(settings);
     $("profile-label").textContent = data.profile;
 
     for (const button of document.querySelectorAll("#view-group button")) {
@@ -719,13 +911,13 @@ function renderScanProgress(data) {
     element.textContent = `${phase} ${progress.done}/${progress.total}${cached}`;
 }
 
-function renderCandidates(scan) {
+function renderCandidates(scan, sharing = false) {
     const pane = $("tab-candidates");
     if (!scan) {
         pane.innerHTML = `<p class="hint">「候補を探す」で ${$("scan-weeks").value} 週間先まで全員の空きを探します。</p>`;
         return;
     }
-    const hints = (scan.hint || []).map((text) => `<li>${escapeHtml(text)}</li>`).join("");
+    const hints = sharing ? "" : (scan.hint || []).map((text) => `<li>${escapeHtml(text)}</li>`).join("");
     if (!scan.candidates.length) {
         pane.innerHTML = `<p class="empty">${escapeHtml(scan.from)} 〜 ${escapeHtml(scan.until)} に ${scan.durationMinutes}分の空きはありません。</p>${hints ? `<ul class="notes">${hints}</ul>` : ""}`;
         return;
@@ -733,7 +925,7 @@ function renderCandidates(scan) {
     const rows = scan.candidates
         .slice(0, 30)
         .map((candidate, position) => {
-            const reasons = candidate.reasons.map((text) => `<li>${escapeHtml(text)}</li>`).join("");
+            const reasons = sharing ? "" : candidate.reasons.map((text) => `<li>${escapeHtml(text)}</li>`).join("");
             return `<li class="candidate${position === 0 ? " top" : ""}">
                 <div class="candidate-head">
                     <span class="candidate-when">${escapeHtml(formatDayLabel(candidate.day))} ${escapeHtml(candidate.start)}–${escapeHtml(candidate.end)}</span>
@@ -748,7 +940,7 @@ function renderCandidates(scan) {
         <ol class="candidates">${rows}</ol>`;
 }
 
-function renderBlockers(scan) {
+function renderBlockers(scan, sharing = false) {
     const pane = $("tab-blockers");
     if (!scan) {
         pane.innerHTML = `<p class="hint">スキャン後に、誰がどれだけ枠を塞いでいるかを表示します。</p>`;
@@ -760,27 +952,27 @@ function renderBlockers(scan) {
                 <td>${escapeHtml(blocker.label)}</td>
                 <td class="num">${blocker.slotsBlocked}</td>
                 <td class="num strong">${blocker.soleBlocker}</td>
-                <td class="num">${blocker.awaySlots}</td>
+                ${sharing ? "" : `<td class="num">${blocker.awaySlots}</td>`}
             </tr>`,
         )
         .join("");
     const near = scan.nearMiss
         .slice(0, 25)
         .map(
-            (slot) => `<li class="${slot.movable ? "movable" : "immovable"}">
+            (slot) => `<li${sharing ? "" : ` class="${slot.movable ? "movable" : "immovable"}"`}>
                 <span class="near-when">${escapeHtml(formatDayLabel(slot.day))} ${escapeHtml(slot.start)}–${escapeHtml(slot.end)}</span>
                 <span class="near-who">${escapeHtml(slot.blocker)}</span>
-                <span class="near-what">${slot.events.map((event) => `${escapeHtml(event.title)}<i>${escapeHtml(KIND_LABELS[event.kind] || event.kind)}</i>`).join(" / ")}</span>
+                <span class="near-what">${sharing ? "予定あり" : slot.events.map((event) => `${escapeHtml(event.title)}<i>${escapeHtml(KIND_LABELS[event.kind] || event.kind)}</i>`).join(" / ")}</span>
             </li>`,
         )
         .join("");
     pane.innerHTML = `<table class="blockers">
-            <thead><tr><th>参加者</th><th class="num">塞いだ枠</th><th class="num">単独原因</th><th class="num">終日ブロック</th></tr></thead>
+            <thead><tr><th>参加者</th><th class="num">塞いだ枠</th><th class="num">単独原因</th>${sharing ? "" : '<th class="num">終日ブロック</th>'}</tr></thead>
             <tbody>${rows}</tbody>
         </table>
         <h4>あと1人空けば成立する枠</h4>
         ${near ? `<ul class="near-miss">${near}</ul>` : '<p class="hint">該当なし</p>'}
-        <p class="hint">緑＝会議なのでリスケ交渉の余地あり / 赤＝終日ブロックなので会議を動かしても空きません。</p>`;
+        ${sharing ? "" : '<p class="hint">緑＝会議なのでリスケ交渉の余地あり / 赤＝終日ブロックなので会議を動かしても空きません。</p>'}`;
 }
 
 function whatIfMarkup(id) {
@@ -798,7 +990,7 @@ function whatIfMarkup(id) {
     return `<p class="whatif-result nogain">動かしても空きは増えません（${result.baselineCount} 枠のまま）。別の要因が塞いでいます。</p>`;
 }
 
-function renderShared(scan) {
+function renderShared(scan, sharing = sharingMode()) {
     const pane = $("tab-shared");
     if (!scan) {
         pane.innerHTML = `<p class="hint">スキャン後に、複数人が同席している会議を表示します。</p>`;
@@ -816,11 +1008,11 @@ function renderShared(scan) {
             return `<li class="${everyone ? "everyone" : ""}">
                 <div class="shared-head">
                     <span class="shared-count">${meeting.attendeeCount}人</span>
-                    <span class="shared-title">${escapeHtml(meeting.title)}</span>
-                    ${meeting.recurring ? '<span class="tag">定期</span>' : ""}
+                    <span class="shared-title">${sharing ? "予定あり" : escapeHtml(meeting.title)}</span>
+                    ${!sharing && meeting.recurring ? '<span class="tag">定期</span>' : ""}
                     ${everyone ? '<span class="tag ok">全員</span>' : ""}
                 </div>
-                <div class="shared-meta">${escapeHtml(meeting.attendees.join("・"))} / ${meeting.occurrences}回 / ${escapeHtml(String(meeting.firstStart).slice(0, 16).replace("T", " "))}</div>
+                <div class="shared-meta">${escapeHtml(meeting.attendees.join("・"))}${sharing ? "" : ` / ${meeting.occurrences}回`} / ${escapeHtml(String(meeting.firstStart).slice(0, 16).replace("T", " "))}</div>
                 <button type="button" class="whatif" data-whatif="${position}">動かしたら何枠空く？</button>
                 ${whatIfMarkup(meeting.keys.join("|"))}
             </li>`;
@@ -830,10 +1022,11 @@ function renderShared(scan) {
 }
 
 function renderAdjust(data) {
+    const sharing = sharingMode(data.settings);
     renderScanProgress(data);
-    renderCandidates(data.scan);
-    renderBlockers(data.scan);
-    renderShared(data.scan);
+    renderCandidates(data.scan, sharing);
+    renderBlockers(data.scan, sharing);
+    renderShared(data.scan, sharing);
     const busy = Boolean(data.scanProgress);
     $("scan-btn").disabled = busy;
     $("scan-force").disabled = busy;
@@ -842,9 +1035,12 @@ function renderAdjust(data) {
 function renderStatus(data) {
     const status = $("status");
     const errors = [];
-    if (data.error) errors.push(data.error);
+    const sharing = sharingMode(data.settings);
+    if (data.error) errors.push(`${sharing ? "処理に失敗しました: " : ""}${errorDetail(data.error, data.settings)}`);
     for (const calendar of (data.snapshot && data.snapshot.calendars) || []) {
-        if (calendar.error) errors.push(`${calendar.label}: ${calendar.error}`);
+        if (calendar.error) {
+            errors.push(`${calendar.label}: ${sharing ? "取得に失敗しました: " : ""}${errorDetail(calendar.error, data.settings)}`);
+        }
     }
     if (errors.length) {
         status.className = "status error";
@@ -872,6 +1068,7 @@ function renderStatus(data) {
 function apply(data) {
     if (!data || !data.settings) return;
     if (Number.isInteger(data.revision) && Number.isInteger(state.data?.revision) && data.revision < state.data.revision) return;
+    if (data.settings.shareMode && !state.shareLatched) activateSharing();
     hidePopover();
     // what-if results describe one specific scan (its duration, window and
     // participants). Keeping them across a new or invalidated scan would show a
@@ -889,6 +1086,7 @@ function apply(data) {
     $("range-label").textContent = formatRange(data.range || (data.snapshot && data.snapshot.range));
     $("refresh").disabled = Boolean(data.loading);
     renderDatePicker(data);
+    renderSharing(data);
     renderSettings(data);
     renderPresets(data);
     if (!state.calendarDrag) renderChips(data);
@@ -936,7 +1134,7 @@ function saveGridHeight(height) {
         } catch (error) {
             const status = $("status");
             status.className = "status error";
-            status.textContent = `表示領域の高さを保存できませんでした: ${error.message}`;
+            status.textContent = `表示領域の高さを保存できませんでした: ${errorDetail(error)}`;
         } finally {
             if (pendingGridSize === change) pendingGridSize = null;
             renderGridHeight();
@@ -995,47 +1193,57 @@ new ResizeObserver(renderGridHeight).observe($("calendar-main"));
 /* ---------------- popover ---------------- */
 
 function showPopover(target) {
-    const key = calendarEventKey(target.dataset.cal, target.dataset.ev);
-    const entry = state.index.get(key);
-    if (!entry) return;
-    const { calendar, event } = entry;
-    const rows = [];
-    const push = (term, value) => {
-        if (value) rows.push(`<dt>${escapeHtml(term)}</dt><dd>${escapeHtml(value)}</dd>`);
-    };
-
-    if (event.allDay) {
-        push("日時", `${event.start} 〜 (終日)`);
+    let markup;
+    if (sharingMode()) {
+        const time = target.dataset.shareTime;
+        if (!time) return;
+        const number = /^\d+$/.test(target.dataset.shared || "") ? target.dataset.shared : "";
+        const declined = target.classList.contains("declined");
+        markup = `<h3>予定あり</h3><dl><dt>日時</dt><dd>${escapeHtml(time)}</dd>${number ? `<dt>共通予定</dt><dd>同${number}</dd>` : ""}${declined ? "<dt>参加状況</dt><dd>辞退</dd>" : ""}</dl>`;
     } else {
-        const start = new Date(event.start);
-        const end = new Date(event.end);
-        push(
-            "日時",
-            `${localDate(start)} ${pad2(start.getHours())}:${pad2(start.getMinutes())} – ${pad2(end.getHours())}:${pad2(end.getMinutes())}`,
-        );
-    }
-    push("カレンダー", calendar.label);
-    const shared = state.sharedEvents.get(key);
-    if (shared) {
-        push("同じ予定", `同${shared.number}（予定 ID / iCalUID・開始時刻が一致）`);
-        push("他のカレンダー", sharedPeers(shared, calendar));
-    }
-    push("場所", event.location);
-    push("主催者", event.organizer);
-    if (event.attendeeCount) push("参加者", `${event.attendeeCount} 名`);
-    push("参加状況", RESPONSE_LABELS[event.responseStatus] || "");
-    push("公開範囲", event.detailsVisible ? event.visibility || "既定" : "詳細非公開（空き時間のみ共有）");
-    if (event.transparency === "transparent") push("予定の扱い", "空き時間");
-    if (event.completedFrom) {
-        push("補完元カレンダー", event.completedFromName || event.completedFrom);
-        if (event.completedFromName && event.completedFromName !== event.completedFrom) {
-            push("補完元 ID", event.completedFrom);
+        const key = calendarEventKey(target.dataset.cal, target.dataset.ev);
+        const entry = state.index.get(key);
+        if (!entry) return;
+        const { calendar, event } = entry;
+        const rows = [];
+        const push = (term, value) => {
+            if (value) rows.push(`<dt>${escapeHtml(term)}</dt><dd>${escapeHtml(value)}</dd>`);
+        };
+
+        if (event.allDay) {
+            push("日時", `${event.start} 〜 (終日)`);
+        } else {
+            const start = new Date(event.start);
+            const end = new Date(event.end);
+            push(
+                "日時",
+                `${localDate(start)} ${pad2(start.getHours())}:${pad2(start.getMinutes())} – ${pad2(end.getHours())}:${pad2(end.getMinutes())}`,
+            );
         }
-    } else if (event.completed) push("補完", "推定・補完元不明（旧 CLI のため確認できません）");
-    if (event.description) push("説明", event.description.slice(0, 400));
+        push("カレンダー", calendar.label);
+        const shared = state.sharedEvents.get(key);
+        if (shared) {
+            push("同じ予定", `同${shared.number}（予定 ID / iCalUID・開始時刻が一致）`);
+            push("他のカレンダー", sharedPeers(shared, calendar));
+        }
+        push("場所", event.location);
+        push("主催者", event.organizer);
+        if (event.attendeeCount) push("参加者", `${event.attendeeCount} 名`);
+        push("参加状況", RESPONSE_LABELS[event.responseStatus] || "");
+        push("公開範囲", event.detailsVisible ? event.visibility || "既定" : "詳細非公開（空き時間のみ共有）");
+        if (event.transparency === "transparent") push("予定の扱い", "空き時間");
+        if (event.completedFrom) {
+            push("補完元カレンダー", event.completedFromName || event.completedFrom);
+            if (event.completedFromName && event.completedFromName !== event.completedFrom) {
+                push("補完元 ID", event.completedFrom);
+            }
+        } else if (event.completed) push("補完", "推定・補完元不明（旧 CLI のため確認できません）");
+        if (event.description) push("説明", event.description.slice(0, 400));
+        markup = `<h3>${escapeHtml(event.detailsVisible ? event.summary : "予定あり（詳細非公開）")}</h3><dl>${rows.join("")}</dl>`;
+    }
 
     const popover = $("popover");
-    popover.innerHTML = `<h3>${escapeHtml(event.detailsVisible ? event.summary : "予定あり（詳細非公開）")}</h3><dl>${rows.join("")}</dl>`;
+    popover.innerHTML = markup;
     popover.hidden = false;
 
     const rect = target.getBoundingClientRect();
@@ -1048,9 +1256,53 @@ function showPopover(target) {
 
 const hidePopover = () => {
     $("popover").hidden = true;
+    $("popover").innerHTML = "";
 };
 
 /* ---------------- wiring ---------------- */
+
+function activateSharing() {
+    state.shareLatched = true;
+    if (state.calendarDrag) cancelCalendarDrag();
+    hidePopover();
+    for (const [id, prefix] of [
+        ["date-picker-error", "日付の操作に失敗しました。"],
+        ["calendar-order-message", "カレンダーの操作に失敗しました。"],
+        ["preset-message", "プリセットの操作に失敗しました。"],
+        ["calendar-hint", "カレンダーの操作に失敗しました。"],
+    ]) {
+        const element = $(id);
+        const hadError = Boolean(element.textContent) && (id === "date-picker-error"
+            || element.className === "status error" || (id === "calendar-hint" && element.textContent.includes("失敗")));
+        element.textContent = hadError ? `${prefix}共有モード中のため詳細は非表示です。` : "";
+        if (id !== "calendar-hint") element.hidden = !hadError;
+    }
+}
+
+async function saveShareMode(enabled) {
+    if (!state.data || state.sharePending) return;
+    state.sharePending = true;
+    state.shareFailure = null;
+    if (!state.shareLatched) activateSharing();
+    apply(state.data);
+    try {
+        const payload = await patchSettings({ shareMode: enabled }, false);
+        if (Boolean(payload.settings?.shareMode) !== enabled || Boolean(state.data?.settings?.shareMode) !== enabled) {
+            throw new Error("共有モードの設定を保存できませんでした。");
+        }
+        if (!enabled) state.shareLatched = false;
+    } catch (error) {
+        state.shareFailure = {
+            target: enabled,
+            message: enabled
+                ? "共有モードを保存できませんでした。この画面では予定を隠していますが、再読込後は解除される可能性があります。"
+                : "共有モードを解除できませんでした。予定は引き続き隠しています。",
+        };
+    } finally {
+        state.sharePending = false;
+        apply(state.data);
+    }
+}
 
 function highlightSharedEvents() {
     const number = (state.hoveredEvent || state.focusedEvent)?.dataset.shared;
@@ -1084,25 +1336,26 @@ async function loadCalendarOptions() {
             .map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.summary)}</option>`)
             .join("");
         $("calendar-hint").textContent = payload.error
-            ? `候補の取得に失敗しました: ${payload.error}`
+            ? `候補の取得に失敗しました: ${errorDetail(payload.error)}`
             : "候補は自分のカレンダー一覧（gali list）です。他ユーザーのメールアドレスも直接入力できます。";
     } catch (error) {
-        $("calendar-hint").textContent = String(error);
+        $("calendar-hint").textContent = `候補の取得に失敗しました: ${errorDetail(error)}`;
     }
 }
 
 async function addCalendar() {
     const input = $("add-input");
-    const ids = input.value
+    const submitted = input.value;
+    const ids = submitted
         .split(/[,\s]+/)
         .map((value) => value.trim())
         .filter(Boolean);
     if (!ids.length) return;
     try {
         await enqueueCalendarOperation(() => post("/api/calendars/add", { calendars: ids }));
-        input.value = "";
+        if (input.value === submitted) input.value = "";
     } catch (error) {
-        $("calendar-hint").textContent = `追加に失敗しました: ${error.message || error}`;
+        $("calendar-hint").textContent = `追加に失敗しました: ${errorDetail(error)}`;
     }
 }
 
@@ -1112,12 +1365,17 @@ function clearCalendarDropTarget() {
     if (state.calendarDrag) state.calendarDrag.target = null;
 }
 
-function finishCalendarDrag() {
+function cancelCalendarDrag() {
     const drag = state.calendarDrag;
     if (!drag) return;
     clearCalendarDropTarget();
     drag.source.classList.remove("dragging");
     state.calendarDrag = null;
+}
+
+function finishCalendarDrag() {
+    if (!state.calendarDrag) return;
+    cancelCalendarDrag();
     if (state.data) {
         renderChips(state.data);
         renderGrid(state.data);
@@ -1186,7 +1444,7 @@ document.addEventListener("click", (domEvent) => {
     if (remove) {
         const id = remove.dataset.remove;
         enqueueCalendarOperation(() => post("/api/calendars/remove", { calendars: [id] })).catch((error) => {
-            calendarOrderMessage(`カレンダーを削除できませんでした: ${error.message || error}`, true);
+            calendarOrderMessage(`カレンダーを削除できませんでした: ${errorDetail(error)}`, true);
         });
         return;
     }
@@ -1241,7 +1499,7 @@ $("date-calendar-days").addEventListener("keydown", (event) => {
     } else if (event.key === "Home" || event.key === "End") {
         event.preventDefault();
         const day = new Date(`${state.dateCalendar.focus}T00:00:00Z`).getUTCDay();
-        const offset = (day + 6) % 7;
+        const offset = day;
         moveDateCalendarDays(event.key === "Home" ? -offset : 6 - offset);
     } else if (event.key === "PageUp" || event.key === "PageDown") {
         event.preventDefault();
@@ -1250,6 +1508,10 @@ $("date-calendar-days").addEventListener("keydown", (event) => {
 });
 
 $("refresh").addEventListener("click", () => post("/api/refresh", {}));
+$("toggle-share").addEventListener("click", () => saveShareMode(!sharingMode()));
+$("retry-share-mode").addEventListener("click", () => {
+    if (state.shareFailure) return saveShareMode(state.shareFailure.target);
+});
 
 $("toggle-presets").addEventListener("click", (event) => {
     const panel = $("presets");
@@ -1269,9 +1531,10 @@ $("preset-name").addEventListener("input", () => {
 
 $("save-preset").addEventListener("click", async () => {
     const input = $("preset-name");
-    const result = await postPreset("/api/presets/create", { name: input.value });
+    const submitted = input.value;
+    const result = await postPreset("/api/presets/create", { name: submitted });
     if (!result) return;
-    input.value = "";
+    if (input.value === submitted) input.value = "";
     $("preset-select").value = result.preset.id;
     renderPresets(state.data);
     presetMessage(`「${result.preset.name}」を保存しました。`);

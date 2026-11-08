@@ -94,6 +94,10 @@ function createRenderer({ now } = {}) {
             context.renderGrid(data);
             return elements.get("grid").innerHTML;
         },
+        timedEdges(placements, edge) {
+            const connectable = context.connectableTimed(placements)[edge];
+            return placements.map((placement) => connectable.has(placement));
+        },
         renderStatus(data) {
             context.renderStatus(data);
             return elements.get("status");
@@ -119,6 +123,14 @@ function createRenderer({ now } = {}) {
             new Script("state.index.set(entry.calendar.id + '\\u0000' + entry.event.id, entry);").runInContext(context);
             context.showPopover({
                 dataset: { cal: calendar.id, ev: event.id },
+                getBoundingClientRect() { return { left: 20, top: 20, bottom: 40 }; },
+            });
+            return elements.get("popover").innerHTML;
+        },
+        sharingDetails(time, number, declined = false) {
+            context.showPopover({
+                dataset: { shareTime: time, ...(number ? { shared: String(number) } : {}) },
+                classList: { contains(name) { return name === "declined" && declined; } },
                 getBoundingClientRect() { return { left: 20, top: 20, bottom: 40 }; },
             });
             return elements.get("popover").innerHTML;
@@ -263,9 +275,10 @@ test("the displayed range is the calendar button and no separate date input exis
     assert.match(html, /<dialog class="date-dialog" id="date-calendar" aria-labelledby="date-calendar-title">[\s\S]*?<button type="button" id="date-calendar-today">今日<\/button>[\s\S]*?<\/dialog>/);
     assert.match(html, /role="grid" aria-labelledby="date-calendar-month"/);
     assert.match(html, /id="date-calendar-month" aria-live="polite"/);
-    for (const weekday of ["月", "火", "水", "木", "金", "土", "日"]) {
+    for (const weekday of ["日", "月", "火", "水", "木", "金", "土"]) {
         assert.match(html, new RegExp(`<th scope="col" abbr="${weekday}曜日">${weekday}</th>`));
     }
+    assert.ok(html.indexOf('abbr="日曜日"') < html.indexOf('abbr="月曜日"'));
 });
 
 async function pickCalendarDay(renderer, date) {
@@ -308,7 +321,7 @@ test("calendar dialog keeps its focused month through live updates and restores 
     assert.match(markup, /aria-selected="true" class="in-range"><button[^>]+data-picker-date="2026-03-04" tabindex="0" aria-label="2026年3月4日 水曜日"/);
     const highlighted = [...markup.matchAll(/class="in-range"><button[^>]+data-picker-date="([^"]+)"/g)].map((match) => match[1]);
     assert.deepEqual(highlighted, ["2026-03-04", "2026-03-05", "2026-03-06", "2026-03-07", "2026-03-08", "2026-03-09", "2026-03-10"]);
-    assert.match(markup, /^<tr>(?:<td role="presentation"><\/td>){6}<td role="gridcell"[^>]*><button[^>]+data-picker-date="2026-03-01"/);
+    assert.match(markup, /^<tr><td role="gridcell"[^>]*><button[^>]+data-picker-date="2026-03-01"/);
 
     const focused = renderer.activeElement();
     renderer.apply(dateData("2026-04-15", "week", 2));
@@ -412,13 +425,13 @@ test("calendar navigation handles month ends, leap years, and keyboard movement"
     await calendarKey(renderer, "ArrowDown");
     assert.equal(focusedCalendarDate(renderer), "2024-02-29");
     await calendarKey(renderer, "Home");
-    assert.equal(focusedCalendarDate(renderer), "2024-02-26");
+    assert.equal(focusedCalendarDate(renderer), "2024-02-25");
     await calendarKey(renderer, "End");
-    assert.equal(focusedCalendarDate(renderer), "2024-03-03");
+    assert.equal(focusedCalendarDate(renderer), "2024-03-02");
     await calendarKey(renderer, "PageUp");
-    assert.equal(focusedCalendarDate(renderer), "2024-02-03");
+    assert.equal(focusedCalendarDate(renderer), "2024-02-02");
     await calendarKey(renderer, "PageDown", true);
-    assert.equal(focusedCalendarDate(renderer), "2025-02-03");
+    assert.equal(focusedCalendarDate(renderer), "2025-02-02");
     await renderer.fire("date-calendar-close", "click");
 
     renderer.apply(dateData("2025-01-31", "day", 2));
@@ -431,6 +444,23 @@ test("calendar navigation handles month ends, leap years, and keyboard movement"
     assert.equal(renderer.activeElement(), renderer.element("date-calendar-prev"));
     focusCalendarDay(renderer, "2025-01-28");
     assert.equal(focusedCalendarDate(renderer), "2025-01-28");
+});
+
+test("calendar columns start on Sunday and keyboard week edges follow that order", async () => {
+    const renderer = createRenderer();
+    renderer.apply(dateData("2026-04-15"));
+    await renderer.fire("date-picker-toggle", "click");
+    const markup = renderer.element("date-calendar-days").innerHTML;
+    assert.match(markup, /^<tr>(?:<td role="presentation"><\/td>){3}<td role="gridcell"[^>]*><button[^>]+data-picker-date="2026-04-01"/);
+    const monthDates = [...markup.matchAll(/data-picker-date="2026-04-(\d{2})"/g)].map((match) => Number(match[1]));
+    assert.equal(monthDates[0], 1);
+    assert.equal(new Date(Date.UTC(2026, 3, 1)).getUTCDay(), 3);
+
+    focusCalendarDay(renderer, "2026-04-15");
+    await calendarKey(renderer, "Home");
+    assert.equal(focusedCalendarDate(renderer), "2026-04-12");
+    await calendarKey(renderer, "End");
+    assert.equal(focusedCalendarDate(renderer), "2026-04-18");
 });
 
 test("repeated month-button activation keeps focus and does not select a date", async () => {
@@ -931,6 +961,1002 @@ function sharedData(allDay = false) {
     };
 }
 
+function joinedData(allDay = false) {
+    const data = sharedData(allDay);
+    const calendars = data.snapshot.calendars;
+    calendars[0].events[0].id = "meeting-alice";
+    calendars[1].events[0].id = "meeting-bob";
+    calendars.push({
+        id: "carol", label: "Carol", color: "#bc4c00",
+        events: [{ ...calendars[0].events[0], id: "meeting-carol" }],
+    });
+    return data;
+}
+
+function gridEventBlocks(html) {
+    return [...html.matchAll(/<button type="button" class="([^"]*)"([\s\S]*?)<\/button>/g)].map((match) => ({
+        classes: new Set(match[1].split(" ")),
+        calendar: /data-cal="([^"]*)"/.exec(match[2])?.[1],
+        event: /data-ev="([^"]*)"/.exec(match[2])?.[1],
+        shared: /data-shared="([^"]*)"/.exec(match[2])?.[1],
+        markup: match[0],
+    }));
+}
+
+function gridAllDayRows(html) {
+    return [...html.matchAll(/<tr class="allday-row(?: allday-last)?">([\s\S]*?)<\/tr>/g)]
+        .map((match) => ({
+            cells: [...match[1].matchAll(/<td\b/g)].length,
+            blocks: gridEventBlocks(match[1]),
+        }));
+}
+
+function otherTimedEvent(id, start, end) {
+    return {
+        id, uid: id, summary: `Hidden ${id}`, detailsVisible: true, allDay: false,
+        start: `2026-10-12T${start}`, end: `2026-10-12T${end}`,
+    };
+}
+
+function otherAllDayEvent(id) {
+    return {
+        id, uid: id, summary: `Hidden ${id}`, detailsVisible: true, allDay: true,
+        start: "2026-10-12", end: "2026-10-13",
+    };
+}
+
+function assertJoins(blocks, expected) {
+    assert.deepEqual(blocks.map((block) => [
+        block.classes.has("join-left"),
+        block.classes.has("join-right"),
+    ]), expected);
+}
+
+test("adjacent matching timed and all-day events connect only in sharing mode", () => {
+    for (const allDay of [false, true]) {
+        for (const sharing of [false, true]) {
+            const data = joinedData(allDay);
+            data.settings.shareMode = sharing;
+            const html = createRenderer().render(data);
+            const blocks = gridEventBlocks(html);
+            assert.equal(blocks.length, 3);
+            if (sharing) {
+                assertJoins(blocks, [[false, true], [true, true], [true, false]]);
+                assert.doesNotMatch(html, /data-cal=|data-ev=|meeting-alice|meeting-bob|meeting-carol|meeting@example\.com|Hidden private summary/);
+                assert.equal(blocks.filter((block) => block.markup.includes('data-shared="1"')).length, 3);
+            } else {
+                assertJoins(blocks, [[false, false], [false, false], [false, false]]);
+                assert.deepEqual(blocks.map((block) => block.calendar), ["alice", "bob", "carol"]);
+                assert.deepEqual(blocks.map((block) => block.event), ["meeting-alice", "meeting-bob", "meeting-carol"]);
+            }
+            if (!allDay && sharing) {
+                assert.match(blocks[0].markup, /left:0%;width:calc\(100% \+ 1px\)/);
+                assert.match(blocks[1].markup, /left:calc\(0% - 1px\);width:calc\(100% \+ 2px\)/);
+                assert.match(blocks[2].markup, /left:calc\(0% - 1px\);width:calc\(100% \+ 1px\)/);
+            } else if (!allDay) {
+                for (const block of blocks) assert.match(block.markup, /left:0%;width:100%/);
+            }
+        }
+    }
+});
+
+test("only adjacent matching columns connect, and reordering recalculates the joins", () => {
+    for (const allDay of [false, true]) {
+        const data = joinedData(allDay);
+        data.settings.shareMode = true;
+        const calendars = data.snapshot.calendars;
+        calendars[1].events = [];
+        let blocks = gridEventBlocks(createRenderer().render(data));
+        assert.equal(blocks.length, 2);
+        assertJoins(blocks, [[false, false], [false, false]]);
+
+        [calendars[1], calendars[2]] = [calendars[2], calendars[1]];
+        blocks = gridEventBlocks(createRenderer().render(data));
+        assert.equal(blocks.length, 2);
+        assertJoins(blocks, [[false, true], [true, false]]);
+    }
+});
+
+test("identical-looking but unrelated or errored copies never connect", () => {
+    for (const allDay of [false, true]) {
+        const data = joinedData(allDay);
+        data.settings.shareMode = true;
+        const calendars = data.snapshot.calendars;
+        calendars.pop();
+        calendars[1].events[0].uid = "unrelated";
+        let blocks = gridEventBlocks(createRenderer().render(data));
+        assertJoins(blocks, [[false, false], [false, false]]);
+
+        calendars[1].events[0].uid = calendars[0].events[0].uid;
+        calendars[1].error = "unavailable";
+        blocks = gridEventBlocks(createRenderer().render(data));
+        assertJoins(blocks, [[false, false], [false, false]]);
+    }
+});
+
+test("multi-day shared events connect within each date but not across date boundaries", () => {
+    for (const allDay of [false, true]) {
+        const data = joinedData(allDay);
+        data.settings.shareMode = true;
+        const calendars = data.snapshot.calendars;
+        calendars.pop();
+        data.snapshot.range.days.push("2026-10-13");
+        for (const calendar of calendars) {
+            Object.assign(calendar.events[0], allDay
+                ? { start: "2026-10-12", end: "2026-10-14" }
+                : { start: "2026-10-12T00:00:00", end: "2026-10-14T00:00:00" });
+        }
+        const blocks = gridEventBlocks(createRenderer().render(data));
+        assert.equal(blocks.length, 4);
+        assertJoins(blocks, [[false, true], [true, false], [false, true], [true, false]]);
+    }
+});
+
+test("different underlying end times do not connect even when day-clipped bounds match", () => {
+    for (const allDay of [false, true]) {
+        const data = joinedData(allDay);
+        data.settings.shareMode = true;
+        for (const [index, calendar] of data.snapshot.calendars.entries()) {
+            Object.assign(calendar.events[0], allDay
+                ? { start: "2026-10-12", end: index === 0 ? "2026-10-14" : "2026-10-13" }
+                : {
+                    start: "2026-10-12T23:00:00",
+                    end: index === 0 ? "2026-10-14T08:00:00" : "2026-10-13T12:00:00",
+                });
+        }
+        const blocks = gridEventBlocks(createRenderer().render(data));
+        assertJoins(blocks, [[false, false], [false, true], [true, false]]);
+    }
+});
+
+test("effective default end times match their explicit equivalents", () => {
+    for (const allDay of [false, true]) {
+        const data = joinedData(allDay);
+        data.settings.shareMode = true;
+        data.snapshot.calendars[0].events[0].end = "";
+        const blocks = gridEventBlocks(createRenderer().render(data));
+        assertJoins(blocks, [[false, true], [true, true], [true, false]]);
+    }
+});
+
+test("equivalent timed end instants connect while invalid all-day end dates do not", () => {
+    const timed = joinedData();
+    timed.settings.shareMode = true;
+    timed.snapshot.calendars[1].events[0].end = new Date(timed.snapshot.calendars[1].events[0].end).toISOString();
+    assertJoins(gridEventBlocks(createRenderer().render(timed)), [[false, true], [true, true], [true, false]]);
+
+    const allDay = joinedData(true);
+    allDay.settings.shareMode = true;
+    for (const calendar of allDay.snapshot.calendars) calendar.events[0].end = "2026-99-99";
+    assertJoins(gridEventBlocks(createRenderer().render(allDay)), [[false, false], [false, false], [false, false]]);
+});
+
+test("timed copies at open column edges connect despite overlapping events on their other sides", () => {
+    const data = joinedData();
+    data.settings.shareMode = true;
+    const [alice, bob, carol] = data.snapshot.calendars;
+    alice.events.unshift(otherTimedEvent("alice-other", "17:55:00", "18:20:00"));
+    bob.events.push(otherTimedEvent("bob-other", "18:05:00", "18:20:00"));
+    carol.events.unshift(otherTimedEvent("carol-other", "17:55:00", "18:20:00"));
+    const renderer = createRenderer();
+    const html = renderer.render(data);
+    const blocks = gridEventBlocks(html);
+    const shared = blocks.filter((block) => block.shared);
+    assert.equal(blocks.length, 6);
+    assertJoins(shared, [[false, true], [true, false], [false, false]]);
+    assertJoins(blocks.filter((block) => !block.shared), [[false, false], [false, false], [false, false]]);
+    assert.match(shared[0].markup, /left:50%;width:calc\(50% \+ 1px\)/);
+    assert.match(shared[1].markup, /left:calc\(0% - 1px\);width:calc\(50% \+ 1px\)/);
+    assert.match(shared[2].markup, /left:50%;width:50%/);
+    assert.doesNotMatch(html, /alice-other|bob-other|carol-other|Hidden |data-cal=|data-ev=/);
+
+    data.settings.shareMode = false;
+    assertJoins(gridEventBlocks(renderer.render(data)), Array.from({ length: 6 }, () => [false, false]));
+});
+
+test("a middle timed copy connects on its exposed side only", () => {
+    for (const [otherStart, otherEnd, expected] of [
+        ["17:55:00", "18:20:00", [[false, false], [false, true], [true, false]]],
+        ["18:05:00", "18:20:00", [[false, true], [true, false], [false, false]]],
+    ]) {
+        const data = joinedData();
+        data.settings.shareMode = true;
+        data.snapshot.calendars[1].events.push(otherTimedEvent("other", otherStart, otherEnd));
+        const blocks = gridEventBlocks(createRenderer().render(data));
+        assertJoins(blocks.filter((block) => block.shared), expected);
+        assertJoins(blocks.filter((block) => !block.shared), [[false, false]]);
+    }
+});
+
+test("reordering recalculates which side of an overlapping timed copy connects", () => {
+    const data = joinedData();
+    data.settings.shareMode = true;
+    const calendars = data.snapshot.calendars;
+    calendars[1].events.push(otherTimedEvent("other", "17:55:00", "18:20:00"));
+    const renderer = createRenderer();
+    let shared = gridEventBlocks(renderer.render(data)).filter((block) => block.shared);
+    assertJoins(shared, [[false, false], [false, true], [true, false]]);
+
+    [calendars[1], calendars[2]] = [calendars[2], calendars[1]];
+    shared = gridEventBlocks(renderer.render(data)).filter((block) => block.shared);
+    assertJoins(shared, [[false, true], [true, false], [false, false]]);
+});
+
+test("simultaneous shared groups connect only where their lanes actually meet", () => {
+    const data = sharedData();
+    data.settings.shareMode = true;
+    const [alice, bob] = data.snapshot.calendars;
+    alice.events.push({ ...alice.events[0], id: "second-alice", uid: "second@example.com" });
+    bob.events.unshift({ ...bob.events[0], id: "second-bob", uid: "second@example.com" });
+    const renderer = createRenderer();
+    let blocks = gridEventBlocks(renderer.render(data));
+    assert.equal(new Set(blocks.map((block) => block.shared)).size, 2);
+    assertJoins(blocks, [[false, false], [false, true], [true, false], [false, false]]);
+    assert.equal(blocks[1].shared, blocks[2].shared);
+
+    bob.events.reverse();
+    blocks = gridEventBlocks(renderer.render(data));
+    assertJoins(blocks, [[false, false], [false, false], [false, false], [false, false]]);
+});
+
+test("duplicate copies do not hide events or connect to a different end time", () => {
+    const data = sharedData();
+    data.settings.shareMode = true;
+    const bob = data.snapshot.calendars[1];
+    const duplicate = { ...bob.events[0], id: "duplicate", end: "2026-10-12T18:45:00" };
+    bob.events.push(duplicate);
+    const renderer = createRenderer();
+    let blocks = gridEventBlocks(renderer.render(data));
+    assert.equal(blocks.length, 3);
+    assertJoins(blocks, [[false, false], [false, false], [false, false]]);
+
+    duplicate.end = "2026-10-12T18:20:00";
+    blocks = gridEventBlocks(renderer.render(data));
+    assertJoins(blocks, [[false, true], [true, false], [false, false]]);
+});
+
+test("visible declined timed copies can join at an exposed edge", () => {
+    const data = sharedData();
+    const [alice, bob] = data.snapshot.calendars;
+    alice.events[0].responseStatus = "declined";
+    alice.events.unshift(otherTimedEvent("other", "17:55:00", "18:20:00"));
+    data.settings.shareMode = true;
+    data.settings.showDeclined = true;
+    const renderer = createRenderer();
+    let blocks = gridEventBlocks(renderer.render(data));
+    let shared = blocks.filter((block) => block.shared);
+    assertJoins(shared, [[false, true], [true, false]]);
+    assert.ok(shared[0].classes.has("declined"));
+    assert.match(shared[0].markup, /aria-label="18:00–18:30 予定あり 同1（辞退）"/);
+
+    data.settings.showDeclined = false;
+    blocks = gridEventBlocks(renderer.render(data));
+    shared = blocks.filter((block) => block.shared);
+    assert.equal(shared.length, 0);
+    assert.equal(blocks.length, 2);
+    assertJoins(blocks, [[false, false], [false, false]]);
+    assert.equal(bob.events.length, 1);
+});
+
+test("visual blockers on the same timed edge are detected beyond the adjacent sorted event", () => {
+    const data = sharedData();
+    data.settings.shareMode = true;
+    const bob = data.snapshot.calendars[1];
+    const before = otherTimedEvent("before", "17:59:00", "18:00:00");
+    const interior = otherTimedEvent("interior", "17:59:30", "18:10:00");
+    bob.events.push(before, interior);
+    const renderer = createRenderer();
+    let blocks = gridEventBlocks(renderer.render(data));
+    let shared = blocks.filter((block) => block.shared);
+    assertJoins(shared, [[false, false], [false, false]]);
+    assert.match(blocks[1].markup, /left:0%;width:50%/);
+    assert.match(blocks[2].markup, /left:50%;width:50%/);
+    assert.match(shared[1].markup, /left:0%;width:50%/);
+
+    before.end = "2026-10-12T17:59:30";
+    interior.start = "2026-10-12T18:01:00";
+    blocks = gridEventBlocks(renderer.render(data));
+    shared = blocks.filter((block) => block.shared);
+    assertJoins(shared, [[false, false], [false, false]]);
+    assert.match(blocks[1].markup, /left:0%;width:100%/);
+
+    before.start = "2026-10-12T17:00:00";
+    before.end = "2026-10-12T17:01:00";
+    blocks = gridEventBlocks(renderer.render(data));
+    shared = blocks.filter((block) => block.shared);
+    assertJoins(shared, [[false, true], [true, false]]);
+    assertJoins(blocks.filter((block) => !block.shared), [[false, false], [false, false]]);
+});
+
+test("a minimum-height block in a different cluster cannot be covered by a joined edge lane", () => {
+    const data = sharedData();
+    data.settings.shareMode = true;
+    const [alice, bob] = data.snapshot.calendars;
+    for (const calendar of [alice, bob]) {
+        Object.assign(calendar.events[0], {
+            start: "2026-10-12T10:00:00", end: "2026-10-12T10:30:00",
+        });
+    }
+    alice.events.push(
+        otherTimedEvent("long", "09:30:00", "10:00:00"),
+        otherTimedEvent("early-one", "09:30:00", "09:30:20"),
+        otherTimedEvent("early-two", "09:30:00", "09:30:20"),
+        otherTimedEvent("late-interior", "09:59:00", "10:00:00"),
+        otherTimedEvent("next-cluster", "10:00:00", "11:00:00"),
+    );
+    const blocks = gridEventBlocks(createRenderer().render(data));
+    const shared = blocks.filter((block) => block.shared);
+    assert.equal(blocks.length, 7);
+    assert.match(shared[0].markup, /left:50%;width:50%/);
+    const late = blocks.find((block) => block.markup.includes('data-share-time="09:59–10:00"'));
+    assert.match(late.markup, /left:33\.33333333333333%;width:33\.333333333333336%/);
+    assertJoins(shared, [[false, false], [false, false]]);
+});
+
+test("timed edge detection allows exact visual contact but rejects minimum-height overlaps", () => {
+    const renderer = createRenderer();
+    const nextStart = 14 * 60 / layout.HOUR_HEIGHT;
+    const placements = [
+        { startMin: 0, endMin: 1, lane: 0, laneCount: 1 },
+        { startMin: nextStart, endMin: nextStart + 10, lane: 0, laneCount: 2 },
+        { startMin: nextStart, endMin: nextStart + 10, lane: 1, laneCount: 2 },
+    ];
+    assert.deepEqual(renderer.timedEdges(placements, "left"), [true, true, false]);
+    assert.deepEqual(renderer.timedEdges(placements, "right"), [true, false, true]);
+    placements[1].startMin -= 0.01;
+    placements[2].startMin -= 0.01;
+    assert.deepEqual(renderer.timedEdges(placements, "left"), [false, false, false]);
+    assert.deepEqual(renderer.timedEdges(placements, "right"), [false, false, false]);
+});
+
+test("timed events with logical or minimum-height visual overlaps stay separate", () => {
+    for (const conflictStart of ["18:02", "18:06", "17:59"]) {
+        const data = joinedData();
+        data.settings.shareMode = true;
+        for (const calendar of data.snapshot.calendars) {
+            Object.assign(calendar.events[0], {
+                start: "2026-10-12T18:00:00", end: "2026-10-12T18:05:00",
+            });
+        }
+        data.snapshot.calendars[0].events.push({
+            id: "other", uid: "other", detailsVisible: true, summary: "Other", allDay: false,
+            start: `2026-10-12T${conflictStart}:00`,
+            end: conflictStart === "17:59" ? "2026-10-12T18:00:00" : `2026-10-12T${conflictStart === "18:02" ? "18:04" : "18:10"}:00`,
+        });
+        const blocks = gridEventBlocks(createRenderer().render(data));
+        const shared = blocks.filter((block) => block.shared);
+        assert.equal(blocks.length, 4);
+        assertJoins(shared, [[false, false], [false, true], [true, false]]);
+        assertJoins(blocks.filter((block) => !block.shared), [[false, false]]);
+    }
+});
+
+test("additional all-day events do not prevent same-row shared copies from connecting", () => {
+    const data = joinedData(true);
+    data.settings.shareMode = true;
+    data.snapshot.calendars[0].events.push(otherAllDayEvent("other"));
+    const html = createRenderer().render(data);
+    const blocks = gridEventBlocks(html);
+    const shared = blocks.filter((block) => block.shared);
+    assert.equal(blocks.length, 4);
+    assertJoins(shared, [[false, true], [true, true], [true, false]]);
+    assertJoins(blocks.filter((block) => !block.shared), [[false, false]]);
+    const rows = gridAllDayRows(html);
+    assert.deepEqual(rows.map((row) => row.cells), [4, 4]);
+    assert.deepEqual(rows.map((row) => row.blocks.length), [3, 1]);
+});
+
+test("later all-day rows align without moving other events or changing normal mode", () => {
+    const data = joinedData(true);
+    data.settings.shareMode = true;
+    data.snapshot.calendars.forEach((calendar, index) => {
+        calendar.events.unshift(otherAllDayEvent(`other-${index}`));
+    });
+    data.snapshot.calendars[2].events.push(otherAllDayEvent("extra"));
+    const renderer = createRenderer();
+    const html = renderer.render(data);
+    const rows = gridAllDayRows(html);
+    assert.deepEqual(rows.map((row) => row.cells), [4, 4, 4]);
+    assert.deepEqual(rows.map((row) => row.blocks.length), [3, 3, 1]);
+    assertJoins(rows[0].blocks, [[false, false], [false, false], [false, false]]);
+    assertJoins(rows[1].blocks, [[false, true], [true, true], [true, false]]);
+    assertJoins(rows[2].blocks, [[false, false]]);
+    assert.doesNotMatch(html, /other-[012]|extra|Hidden |data-cal=|data-ev=/);
+
+    data.settings.shareMode = false;
+    const normalRows = gridAllDayRows(renderer.render(data));
+    assert.equal(normalRows.length, 1);
+    assert.deepEqual(normalRows[0].blocks.map((block) => block.event), [
+        "other-0", "meeting-alice", "other-1", "meeting-bob", "other-2", "meeting-carol", "extra",
+    ]);
+    assertJoins(normalRows[0].blocks, Array.from({ length: 7 }, () => [false, false]));
+});
+
+test("all-day copies in different rows remain separate while same-row neighbors connect", () => {
+    const data = joinedData(true);
+    data.settings.shareMode = true;
+    data.snapshot.calendars[0].events.unshift(otherAllDayEvent("other"));
+    const rows = gridAllDayRows(createRenderer().render(data));
+    assert.deepEqual(rows.map((row) => row.blocks.length), [4]);
+    assertJoins(rows[0].blocks, [[false, false], [false, false], [false, true], [true, false]]);
+});
+
+test("hidden declined all-day events do not occupy a row or prevent a join", () => {
+    const data = sharedData(true);
+    const declined = { ...otherAllDayEvent("declined-other"), responseStatus: "declined" };
+    data.snapshot.calendars[0].events.unshift(declined);
+    data.settings.shareMode = true;
+    data.settings.showDeclined = true;
+    const renderer = createRenderer();
+    let rows = gridAllDayRows(renderer.render(data));
+    assert.deepEqual(rows.map((row) => row.blocks.length), [3]);
+    assertJoins(rows[0].blocks, [[false, false], [false, false], [false, false]]);
+    assert.ok(rows[0].blocks[0].classes.has("declined"));
+
+    data.settings.showDeclined = false;
+    rows = gridAllDayRows(renderer.render(data));
+    assert.deepEqual(rows.map((row) => row.blocks.length), [2]);
+    assertJoins(rows[0].blocks, [[false, true], [true, false]]);
+    assert.strictEqual(data.snapshot.calendars[0].events[0], declined);
+});
+
+test("all-day events after the last joined row remain in one trailing list", () => {
+    const data = sharedData(true);
+    data.settings.shareMode = true;
+    for (let index = 0; index < 30; index += 1) {
+        data.snapshot.calendars[0].events.push(otherAllDayEvent(`other-${index}`));
+    }
+    const rows = gridAllDayRows(createRenderer().render(data));
+    assert.deepEqual(rows.map((row) => row.cells), [3, 3]);
+    assert.deepEqual(rows.map((row) => row.blocks.length), [2, 30]);
+    assertJoins(rows[0].blocks, [[false, true], [true, false]]);
+    assertJoins(rows[1].blocks, Array.from({ length: 30 }, () => [false, false]));
+});
+
+test("unjoined all-day events before a connected row remain in a single list per column", () => {
+    const data = sharedData(true);
+    data.settings.shareMode = true;
+    for (const [calendarIndex, calendar] of data.snapshot.calendars.entries()) {
+        const previous = Array.from({ length: 30 }, (_, index) =>
+            otherAllDayEvent(`other-${calendarIndex}-${index}`));
+        calendar.events.unshift(...previous);
+    }
+    const rows = gridAllDayRows(createRenderer().render(data));
+    assert.deepEqual(rows.map((row) => row.cells), [3, 3]);
+    assert.deepEqual(rows.map((row) => row.blocks.length), [60, 2]);
+    assertJoins(rows[0].blocks, Array.from({ length: 60 }, () => [false, false]));
+    assertJoins(rows[1].blocks, [[false, true], [true, false]]);
+});
+
+test("multiple all-day groups connect on their own rows without joining across days", () => {
+    const data = joinedData(true);
+    data.settings.shareMode = true;
+    data.snapshot.range.days.push("2026-10-13");
+    data.snapshot.calendars.forEach((calendar, index) => {
+        calendar.events[0].end = "2026-10-14";
+        calendar.events.unshift({
+            ...calendar.events[0], id: `other-shared-${index}`, uid: "other-shared",
+        });
+        calendar.events.push({
+            ...otherAllDayEvent(`other-${index}`), end: "2026-10-14",
+        });
+    });
+    const rows = gridAllDayRows(createRenderer().render(data));
+    assert.deepEqual(rows.map((row) => row.cells), [7, 7, 7]);
+    assert.deepEqual(rows.map((row) => row.blocks.length), [6, 6, 6]);
+    for (const row of rows.slice(0, 2)) {
+        assertJoins(row.blocks, [
+            [false, true], [true, true], [true, false],
+            [false, true], [true, true], [true, false],
+        ]);
+    }
+    assertJoins(rows[2].blocks, Array.from({ length: 6 }, () => [false, false]));
+});
+
+test("only connected sharing frames use rounded, indented joins", async () => {
+    const css = await readFile(new URL("./ui/app.css", import.meta.url), "utf8");
+    const rule = css.match(/\.ev\.sharing\.join-left,\s*\.ev\.sharing\.join-right\s*\{([^}]*)\}/)?.[1];
+    assert.ok(rule);
+    assert.match(rule, /border-radius:\s*14px\s*\/\s*25%\s*;/);
+    assert.match(rule, /padding-inline:\s*8px\s*;/);
+    assert.match(css, /^\.ev\s*\{[^}]*border-radius:\s*4px\s*;/m);
+    assert.match(css, /\.ev\.join-left\s*\{\s*border-left:\s*0\s*;/);
+    assert.match(css, /\.ev\.join-right\s*\{\s*border-right:\s*0\s*;/);
+    assert.match(css, /table\.cal tbody > tr\.allday-row > td\s*\{\s*height:\s*1px\s*;/);
+    assert.match(css, /\.allday-row:not\(\.allday-last\) \.allday\s*\{\s*border-bottom:\s*0\s*;/);
+});
+
+test("sharing mode uses dotted and hatched declined events without overriding joined edges", async () => {
+    const css = await readFile(new URL("./ui/app.css", import.meta.url), "utf8");
+    const sharingRule = css.match(/\.ev\.sharing\.declined\s*\{([^}]*)\}/)?.[1];
+    assert.ok(sharingRule);
+    assert.match(sharingRule, /border-style:\s*dotted\s*;/);
+    assert.doesNotMatch(sharingRule, /(?:^|;)\s*border(?:-left|-right)?\s*:/);
+
+    const hatchRule = css.match(/^\.ev\s*\{([^}]*)\}/m)?.[1];
+    assert.ok(hatchRule);
+    assert.match(hatchRule, /--ev-hatch:\s*repeating-linear-gradient\(135deg,\s*var\(--ev-fill\)\s*0 4px,\s*transparent\s*4px 8px\)/);
+    assert.match(css, /\.ev\.masked\s*\{\s*background:\s*var\(--ev-hatch\)\s*;/);
+    assert.match(css, /\.ev\.sharing\.declined,\s*\.ev\.sharing\.declined:hover:not\(:disabled\)\s*\{\s*background:\s*var\(--ev-hatch\)\s*;/);
+    assert.match(css, /\.ev\.sharing\.declined\.join-left,\s*\.ev\.sharing\.declined\.join-right,\s*\.ev\.sharing\.declined\.join-left:hover:not\(:disabled\),\s*\.ev\.sharing\.declined\.join-right:hover:not\(:disabled\)\s*\{\s*background:\s*var\(--ev-hatch\),\s*var\(--background-color-default,\s*#ffffff\)\s*;/);
+    const swatchRule = css.match(/\.swatch\.share\.declined\s*\{([^}]*)\}/)?.[1];
+    assert.ok(swatchRule);
+    assert.match(swatchRule, /background:\s*repeating-linear-gradient\(135deg,/);
+
+    const normalRule = css.match(/\.ev\.declined:not\(\.sharing\)\s*\{([^}]*)\}/)?.[1];
+    assert.ok(normalRule);
+    assert.match(normalRule, /opacity:\s*0\.55\s*;/);
+    assert.match(normalRule, /text-decoration:\s*line-through\s*;/);
+
+    const html = await readFile(new URL("./ui/index.html", import.meta.url), "utf8");
+    assert.match(html, /class="swatch share declined"><\/i>辞退（点線・斜線）/);
+});
+
+test("visible declined copies match the same event without changing the snapshot", () => {
+    for (const allDay of [false, true]) {
+        for (const sharing of [false, true]) {
+            const data = sharedData(allDay);
+            const [alice, bob] = data.snapshot.calendars;
+            alice.events[0].id = "accepted-copy";
+            bob.events[0].id = "declined-copy";
+            bob.events[0].responseStatus = "declined";
+            data.settings.shareMode = sharing;
+            data.settings.showDeclined = false;
+            const renderer = createRenderer();
+            const originalEvents = [alice.events, bob.events];
+
+            let blocks = gridEventBlocks(renderer.render(data));
+            assert.equal(blocks.length, 1);
+            assert.equal(blocks[0].shared, undefined);
+            assertJoins(blocks, [[false, false]]);
+
+            data.settings.showDeclined = true;
+            const html = renderer.render(data);
+            blocks = gridEventBlocks(html);
+            assert.equal(blocks.length, 2);
+            assert.deepEqual(blocks.map((block) => block.shared), ["1", "1"]);
+            assert.deepEqual(blocks.map((block) => block.classes.has("declined")), [false, true]);
+            assertJoins(blocks, sharing ? [[false, true], [true, false]] : [[false, false], [false, false]]);
+            if (sharing) {
+                const colors = blocks.map((block) => /--ev-color:([^;"]+)/.exec(block.markup)[1]);
+                assert.equal(colors[0], colors[1]);
+                const time = allDay ? "終日" : "18:00–18:30";
+                assert.ok(blocks[0].markup.includes(`aria-label="${time} 予定あり 同1"`));
+                assert.ok(blocks[1].markup.includes(`aria-label="${time} 予定あり 同1（辞退）"`));
+                assert.ok(blocks[1].markup.includes(`title="${time} 予定あり 同1（辞退）"`));
+                assert.doesNotMatch(html, /accepted-copy|declined-copy|meeting@example\.com|Hidden private summary|data-cal=|data-ev=/);
+            } else {
+                assert.equal(blocks[1].event, "declined-copy");
+                assert.ok(blocks[1].classes.has("declined"));
+                assert.match(renderer.details(alice.events[0], alice), /Bob &quot;&lt;&amp;&gt;/);
+                assert.match(renderer.details(bob.events[0], bob), /参加状況<\/dt><dd>辞退/);
+            }
+
+            data.settings.showDeclined = false;
+            blocks = gridEventBlocks(renderer.render(data));
+            assert.equal(blocks.length, 1);
+            assert.equal(blocks[0].shared, undefined);
+            assert.strictEqual(alice.events, originalEvents[0]);
+            assert.strictEqual(bob.events, originalEvents[1]);
+            assert.equal(bob.events[0].responseStatus, "declined");
+        }
+    }
+});
+
+test("sharing mode marks only each declined copy in connected three-member groups", () => {
+    for (const allDay of [false, true]) {
+        for (const declinedIndex of [0, 1, 2]) {
+            const data = joinedData(allDay);
+            data.settings.shareMode = true;
+            data.settings.showDeclined = true;
+            data.snapshot.calendars.forEach((calendar, index) => {
+                calendar.events[0].responseStatus = index === declinedIndex ? "declined" : "accepted";
+            });
+            const blocks = gridEventBlocks(createRenderer().render(data));
+            const time = allDay ? "終日" : "18:00–18:30";
+            assert.equal(blocks.length, 3);
+            assert.deepEqual(blocks.map((block) => block.shared), ["1", "1", "1"]);
+            assertJoins(blocks, [[false, true], [true, true], [true, false]]);
+            assert.equal(new Set(blocks.map((block) => /--ev-color:([^;"]+)/.exec(block.markup)[1])).size, 1);
+            blocks.forEach((block, index) => {
+                const suffix = index === declinedIndex ? "（辞退）" : "";
+                assert.equal(block.classes.has("declined"), index === declinedIndex);
+                assert.ok(block.markup.includes(`aria-label="${time} 予定あり 同1${suffix}"`));
+                assert.ok(block.markup.includes(`title="${time} 予定あり 同1${suffix}"`));
+                assert.doesNotMatch(block.markup, /meeting-(?:alice|bob|carol)|meeting@example\.com|Hidden private summary|data-cal=|data-ev=/);
+            });
+        }
+    }
+});
+
+test("sharing mode marks an unshared declined event without exposing details", () => {
+    for (const allDay of [false, true]) {
+        const data = sharedData(allDay);
+        data.snapshot.calendars.pop();
+        data.snapshot.calendars[0].events[0].responseStatus = "declined";
+        data.settings.shareMode = true;
+        data.settings.showDeclined = true;
+        const blocks = gridEventBlocks(createRenderer().render(data));
+        const time = allDay ? "終日" : "18:00–18:30";
+        assert.equal(blocks.length, 1);
+        assert.equal(blocks[0].shared, undefined);
+        assert.ok(blocks[0].classes.has("sharing"));
+        assert.ok(blocks[0].classes.has("declined"));
+        assertJoins(blocks, [[false, false]]);
+        assert.ok(blocks[0].markup.includes(`aria-label="${time} 予定あり（辞退）"`));
+        assert.ok(blocks[0].markup.includes(`title="${time} 予定あり（辞退）"`));
+        assert.doesNotMatch(blocks[0].markup, /meeting@example\.com|Hidden private summary|data-cal=|data-ev=/);
+    }
+});
+
+test("two displayed declined copies still represent the same invitation", () => {
+    for (const allDay of [false, true]) {
+        const data = sharedData(allDay);
+        data.settings.showDeclined = true;
+        data.settings.shareMode = true;
+        for (const calendar of data.snapshot.calendars) calendar.events[0].responseStatus = "declined";
+        const blocks = gridEventBlocks(createRenderer().render(data));
+        assert.deepEqual(blocks.map((block) => block.shared), ["1", "1"]);
+        assert.deepEqual(blocks.map((block) => block.classes.has("declined")), [true, true]);
+        assertJoins(blocks, [[false, true], [true, false]]);
+    }
+});
+
+test("a hidden declined copy cannot bridge otherwise separate event identities", () => {
+    const data = joinedData();
+    const [alice, bob, carol] = data.snapshot.calendars;
+    Object.assign(alice.events[0], { id: "alice-copy", uid: "invitation" });
+    Object.assign(bob.events[0], { id: "bob-copy", uid: "bob-copy" });
+    Object.assign(carol.events[0], { id: "bob-copy", uid: "invitation", responseStatus: "declined" });
+    data.settings.shareMode = true;
+    data.settings.showDeclined = false;
+    const renderer = createRenderer();
+
+    let blocks = gridEventBlocks(renderer.render(data));
+    assert.deepEqual(blocks.map((block) => block.shared), [undefined, undefined]);
+    assertJoins(blocks, [[false, false], [false, false]]);
+
+    data.settings.showDeclined = true;
+    blocks = gridEventBlocks(renderer.render(data));
+    assert.deepEqual(blocks.map((block) => block.shared), ["1", "1", "1"]);
+    assertJoins(blocks, [[false, true], [true, true], [true, false]]);
+});
+
+function sharingData() {
+    const shared = {
+        id: "SECRET_ID_A", uid: "SECRET_UID", summary: "SECRET_TITLE", detailsVisible: true, allDay: false,
+        start: "2026-10-12T09:00:00", end: "2026-10-12T10:00:00",
+        location: "SECRET_LOCATION", organizer: "SECRET_ORGANIZER", description: "SECRET_DESCRIPTION",
+        completed: true, completedFrom: "SECRET_SOURCE", completedFromName: "SECRET_SOURCE_NAME",
+        transparency: "transparent", responseStatus: "accepted",
+    };
+    const allDay = {
+        ...shared, id: "SECRET_ALLDAY_A", uid: "SECRET_ALLDAY_UID", summary: "SECRET_ALLDAY_TITLE",
+        allDay: true, start: "2026-10-12", end: "2026-10-13",
+    };
+    const solo = {
+        ...shared, id: "SECRET_SOLO_ID", uid: "SECRET_SOLO_UID", summary: "SECRET_SOLO_TITLE",
+        start: "2026-10-12T11:00:00", end: "2026-10-12T11:30:00",
+        detailsVisible: false, responseStatus: "declined",
+    };
+    const calendars = [
+        {
+            id: "alice", label: "Alice", color: "#3f7ee8", error: null,
+            stats: { total: 3, hidden: 1, declined: 1 }, events: [shared, allDay, solo],
+        },
+        {
+            id: "bob", label: "Bob", color: "#c9631a", error: null,
+            stats: { total: 2, hidden: 0, declined: 0 },
+            events: [{ ...shared, id: "SECRET_ID_B" }, { ...allDay, id: "SECRET_ALLDAY_B" }],
+        },
+    ];
+    const scan = {
+        fetchedAt: "2026-10-12T00:00:00Z", from: "2026-10-12", until: "2026-10-18",
+        durationMinutes: 30, totalFreeSlots: 1,
+        hint: ["SECRET_HINT"],
+        candidates: [{
+            day: "2026-10-12", start: "10:00", end: "10:30", blockMinutes: 30,
+            reasons: ["SECRET_REASON"],
+        }],
+        blockers: [{ label: "Alice", slotsBlocked: 2, soleBlocker: 1, awaySlots: 1 }],
+        nearMiss: [{
+            day: "2026-10-12", start: "11:00", end: "11:30", blocker: "Alice", movable: false,
+            events: [{ title: "SECRET_NEAR", kind: "away" }],
+        }],
+        sharedMeetings: [{
+            title: "SECRET_SHARED", attendees: ["Alice", "Bob"], attendeeCount: 2,
+            recurring: true, occurrences: 2, firstStart: "2026-10-12T09:00:00", keys: ["SECRET_KEY"],
+        }],
+        calendars: [{ id: "alice" }, { id: "bob" }],
+    };
+    return {
+        profile: "sharing-test", revision: 1,
+        settings: {
+            calendars: calendars.map(({ id, label }) => ({ id, label })),
+            refs: [], view: "day", workStart: "09:00", workEnd: "18:00",
+            showDeclined: true, showCompletionDiff: true, policyPatterns: ["SECRET_POLICY"],
+        },
+        snapshot: { calendars, range: { days: ["2026-10-12"] }, fetchedAt: "2026-10-12T00:00:00Z" },
+        range: { anchor: "2026-10-12", days: ["2026-10-12"] },
+        presets: [], freeSlots: [], scan,
+    };
+}
+
+test("declined visibility rebuilds grouping and joins without fetching or changing the snapshot", async () => {
+    const data = sharingData();
+    data.settings.shareMode = true;
+    data.settings.showDeclined = false;
+    data.snapshot.calendars[1].events[0].responseStatus = "declined";
+    const renderer = createRenderer();
+    renderer.apply(data);
+    const timedBlocks = () => gridEventBlocks(renderer.element("grid").innerHTML)
+        .filter((block) => block.markup.includes('data-share-time="09:00–10:00"'));
+    let blocks = timedBlocks();
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].shared, undefined);
+
+    const requests = [];
+    let revision = data.revision;
+    renderer.useFetch(async (url, options) => {
+        const request = JSON.parse(options.body);
+        requests.push({ route: new URL(url, "http://localhost").pathname, body: request });
+        return {
+            ok: true,
+            json: async () => ({
+                ...data, revision: ++revision,
+                settings: { ...data.settings, ...request.settings },
+            }),
+        };
+    });
+
+    renderer.element("show-declined").checked = true;
+    await renderer.fire("show-declined", "change");
+    blocks = timedBlocks();
+    assert.equal(blocks.length, 2);
+    assert.deepEqual(blocks.map((block) => block.shared), ["2", "2"]);
+    assert.deepEqual(blocks.map((block) => block.classes.has("declined")), [false, true]);
+    assertJoins(blocks, [[false, true], [true, false]]);
+    assert.strictEqual(renderer.data().snapshot, data.snapshot);
+
+    renderer.element("show-declined").checked = false;
+    await renderer.fire("show-declined", "change");
+    blocks = timedBlocks();
+    assert.equal(blocks.length, 1);
+    assert.equal(blocks[0].shared, undefined);
+    assert.strictEqual(renderer.data().snapshot, data.snapshot);
+    assert.deepEqual(requests, [
+        { route: "/api/settings", body: { settings: { showDeclined: true }, refresh: false } },
+        { route: "/api/settings", body: { settings: { showDeclined: false }, refresh: false } },
+    ]);
+});
+
+test("sharing mode anonymizes timed and all-day events and colors matching groups", () => {
+    const renderer = createRenderer();
+    const data = sharingData();
+    data.settings.shareMode = true;
+    renderer.apply(data);
+    const html = renderer.element("grid").innerHTML;
+    for (const secret of [
+        "SECRET_ID", "SECRET_UID", "SECRET_ALLDAY", "SECRET_SOLO", "SECRET_TITLE", "SECRET_LOCATION",
+        "SECRET_ORGANIZER", "SECRET_DESCRIPTION", "SECRET_SOURCE",
+    ]) assert.ok(!html.includes(secret), secret);
+    assert.match(html, /Alice/);
+    assert.match(html, /Bob/);
+    assert.doesNotMatch(html, /data-cal=|data-ev=|class="badge"|class="ev[^"]*(?:masked|transparent)/);
+    const declined = gridEventBlocks(html).filter((block) => block.classes.has("declined"));
+    assert.equal(declined.length, 1);
+    assert.match(declined[0].markup, /aria-label="11:00–11:30 予定あり（辞退）"/);
+
+    const blocks = [...html.matchAll(/<button type="button" class="ev sharing[^"]*"[\s\S]*?<\/button>/g)]
+        .map((match) => match[0]);
+    assert.equal(blocks.length, 5);
+    const groups = new Map();
+    let ordinary = 0;
+    for (const block of blocks) {
+        assert.match(block, /aria-label="(?:終日|\d\d:\d\d–\d\d:\d\d) 予定あり/);
+        assert.match(block, /title="(?:終日|\d\d:\d\d–\d\d:\d\d) 予定あり/);
+        const color = /--ev-color:([^;"]+)/.exec(block)[1];
+        const number = /data-shared="(\d+)"/.exec(block)?.[1];
+        if (number) {
+            if (!groups.has(number)) groups.set(number, []);
+            groups.get(number).push(color);
+            assert.match(block, new RegExp(`>同${number}</span>`));
+        } else {
+            ordinary += 1;
+            assert.equal(color, "#6e7781");
+            assert.match(block, /予定あり/);
+        }
+    }
+    assert.equal(ordinary, 1);
+    assert.equal(groups.size, 2);
+    const colors = [...groups.values()].map((values) => {
+        assert.equal(values.length, 2);
+        assert.equal(new Set(values).size, 1);
+        return values[0];
+    });
+    assert.equal(new Set(colors).size, 2);
+    assert.equal(renderer.element("normal-legend").hidden, true);
+    assert.equal(renderer.element("share-legend").hidden, false);
+    assert.equal(renderer.element("policy-pattern-field").hidden, true);
+    assert.doesNotMatch(renderer.element("chips").innerHTML, /非公開|辞退|3 件|2 件/);
+});
+
+test("sharing mode removes event details from popovers and every adjustment pane", () => {
+    const renderer = createRenderer();
+    const data = sharingData();
+    renderer.apply(data);
+    const original = renderer.details(data.snapshot.calendars[0].events[0], data.snapshot.calendars[0]);
+    assert.match(original, /SECRET_TITLE|SECRET_DESCRIPTION/);
+
+    renderer.apply({ ...data, revision: 2, settings: { ...data.settings, shareMode: true } });
+    assert.equal(renderer.element("popover").hidden, true);
+    assert.equal(renderer.element("popover").innerHTML, "");
+    const details = renderer.sharingDetails("09:00–10:00", 2);
+    assert.match(details, /予定あり/);
+    assert.match(details, /09:00–10:00/);
+    assert.match(details, /同2/);
+    assert.doesNotMatch(details, /参加状況|辞退/);
+    const declinedDetails = renderer.sharingDetails("終日", 2, true);
+    assert.match(declinedDetails, /<dt>参加状況<\/dt><dd>辞退<\/dd>/);
+    for (const id of ["tab-candidates", "tab-blockers", "tab-shared", "popover"]) {
+        assert.doesNotMatch(renderer.element(id).innerHTML, /SECRET_/);
+    }
+    assert.match(renderer.element("tab-blockers").innerHTML, /Alice/);
+    assert.match(renderer.element("tab-shared").innerHTML, /Alice・Bob/);
+    assert.doesNotMatch(renderer.element("tab-blockers").innerHTML, /immovable|movable|終日ブロック/);
+    assert.doesNotMatch(renderer.element("tab-shared").innerHTML, />定期<|2回/);
+
+    renderer.apply({ ...data, revision: 3, settings: { ...data.settings, shareMode: true } });
+    assert.equal(renderer.element("popover").innerHTML, "");
+    renderer.details(data.snapshot.calendars[0].events[0], data.snapshot.calendars[0]);
+    assert.equal(renderer.element("popover").innerHTML, "");
+});
+
+test("sharing mode switches immediately, survives stale updates, and requires local disclosure", async () => {
+    const renderer = createRenderer();
+    const initial = sharingData();
+    renderer.apply(initial);
+    assert.equal(gridEventBlocks(renderer.element("grid").innerHTML).some((block) => block.classes.has("join-right")), false);
+    renderer.details(initial.snapshot.calendars[0].events[0], initial.snapshot.calendars[0]);
+    let release;
+    const requests = [];
+    renderer.useFetch((url, options) => {
+        requests.push({ route: new URL(url, "http://localhost").pathname, body: JSON.parse(options.body) });
+        return new Promise((resolve) => { release = resolve; });
+    });
+
+    const enabling = renderer.fire("toggle-share", "click");
+    assert.equal(renderer.element("toggle-share").getAttribute("aria-pressed"), "true");
+    assert.equal(renderer.element("toggle-share").disabled, true);
+    assert.equal(renderer.element("popover").innerHTML, "");
+    assert.doesNotMatch(renderer.element("grid").innerHTML, /SECRET_TITLE/);
+    assert.equal(gridEventBlocks(renderer.element("grid").innerHTML).some((block) => block.classes.has("join-right")), true);
+    let declined = gridEventBlocks(renderer.element("grid").innerHTML).find((block) => block.markup.includes('data-share-time="11:00–11:30"'));
+    assert.ok(declined.classes.has("sharing") && declined.classes.has("declined"));
+    assert.match(declined.markup, /aria-label="11:00–11:30 予定あり（辞退）"/);
+    renderer.apply({ ...initial, revision: 2 });
+    assert.doesNotMatch(renderer.element("grid").innerHTML, /SECRET_TITLE/);
+    const enabled = { ...initial, revision: 3, settings: { ...initial.settings, shareMode: true } };
+    release({ ok: true, json: async () => enabled });
+    await enabling;
+    assert.deepEqual(requests[0], {
+        route: "/api/settings", body: { settings: { shareMode: true }, refresh: false },
+    });
+
+    const externallyDisabled = { ...initial, revision: 4, settings: { ...initial.settings, shareMode: false } };
+    renderer.apply(externallyDisabled);
+    assert.equal(renderer.element("toggle-share").getAttribute("aria-pressed"), "true");
+    assert.match(renderer.element("share-mode-error-text").textContent, /再読込すると表示されます/);
+    assert.equal(renderer.element("retry-share-mode").hidden, true);
+    assert.doesNotMatch(renderer.element("grid").innerHTML, /SECRET_TITLE/);
+    assert.equal(gridEventBlocks(renderer.element("grid").innerHTML).some((block) => block.classes.has("join-right")), true);
+    declined = gridEventBlocks(renderer.element("grid").innerHTML).find((block) => block.markup.includes('data-share-time="11:00–11:30"'));
+    assert.ok(declined.classes.has("sharing") && declined.classes.has("declined"));
+
+    const disabling = renderer.fire("toggle-share", "click");
+    renderer.apply({ ...enabled, revision: 6 });
+    release({ ok: true, json: async () => ({ ...externallyDisabled, revision: 5 }) });
+    await disabling;
+    assert.equal(renderer.element("toggle-share").getAttribute("aria-pressed"), "true");
+    assert.equal(renderer.element("share-mode-error").hidden, false);
+    assert.doesNotMatch(renderer.element("grid").innerHTML, /SECRET_TITLE/);
+    renderer.apply({ ...enabled, revision: 7 });
+    assert.equal(renderer.element("share-mode-error").hidden, false);
+
+    renderer.useFetch(async () => ({
+        ok: true, json: async () => ({ ...externallyDisabled, revision: 8 }),
+    }));
+    await renderer.fire("retry-share-mode", "click");
+    assert.equal(renderer.element("toggle-share").getAttribute("aria-pressed"), "false");
+    assert.equal(renderer.element("share-mode-error").hidden, true);
+    assert.match(renderer.element("grid").innerHTML, /SECRET_TITLE/);
+    assert.equal(gridEventBlocks(renderer.element("grid").innerHTML).some((block) => block.classes.has("join-right")), false);
+    assert.match(renderer.element("tab-candidates").innerHTML, /SECRET_REASON/);
+    assert.equal(renderer.element("policy-pattern-field").hidden, false);
+});
+
+test("a latched sharing mode keeps multi-row all-day joins anonymous after a failed save", async () => {
+    const renderer = createRenderer();
+    const data = sharingData();
+    data.snapshot.calendars[0].events.push(otherAllDayEvent("SECRET_EXTRA"));
+    renderer.apply(data);
+    renderer.useFetch(async () => ({ ok: false, json: async () => ({ error: "SECRET_SAVE_ERROR" }) }));
+    await renderer.fire("toggle-share", "click");
+
+    let html = renderer.element("grid").innerHTML;
+    let rows = gridAllDayRows(html);
+    assert.equal(renderer.element("toggle-share").getAttribute("aria-pressed"), "true");
+    assert.deepEqual(rows.map((row) => row.blocks.length), [2, 1]);
+    assertJoins(rows[0].blocks, [[false, true], [true, false]]);
+    assert.doesNotMatch(html, /SECRET_|data-cal=|data-ev=/);
+
+    renderer.apply({ ...data, revision: 2, settings: { ...data.settings, shareMode: false } });
+    html = renderer.element("grid").innerHTML;
+    rows = gridAllDayRows(html);
+    assert.deepEqual(rows.map((row) => row.blocks.length), [2, 1]);
+    assertJoins(rows[0].blocks, [[false, true], [true, false]]);
+    assert.doesNotMatch(html, /SECRET_|data-cal=|data-ev=/);
+});
+
+test("a failed sharing save stays masked and can be retried", async () => {
+    const renderer = createRenderer();
+    const data = sharingData();
+    renderer.apply(data);
+    renderer.useFetch(async () => ({ ok: false, json: async () => ({ error: "SECRET_SAVE_ERROR" }) }));
+    await renderer.fire("toggle-share", "click");
+    assert.equal(renderer.element("toggle-share").getAttribute("aria-pressed"), "true");
+    assert.equal(renderer.element("share-mode-error").hidden, false);
+    assert.match(renderer.element("share-mode-error-text").textContent, /再読込後は解除される可能性/);
+    assert.doesNotMatch(renderer.element("share-mode-error-text").textContent, /SECRET_SAVE_ERROR/);
+    assert.doesNotMatch(renderer.element("grid").innerHTML, /SECRET_TITLE/);
+
+    renderer.useFetch(async () => ({
+        ok: true, json: async () => ({ ...data, revision: 2, settings: { ...data.settings, shareMode: true } }),
+    }));
+    await renderer.fire("retry-share-mode", "click");
+    assert.equal(renderer.element("share-mode-error").hidden, true);
+    assert.equal(renderer.element("toggle-share").getAttribute("aria-pressed"), "true");
+});
+
+test("external sharing activation cancels dragging and redacts current and delayed errors", async () => {
+    const renderer = createRenderer();
+    const data = sharingData();
+    data.error = "SECRET_STATUS_ERROR";
+    data.presetError = "SECRET_PRESET_ERROR";
+    data.snapshot.calendars[1].error = "SECRET_CALENDAR_ERROR";
+    renderer.apply(data);
+    renderer.element("date-picker-error").textContent = "SECRET_OLD_ERROR";
+    renderer.element("calendar-hint").textContent = "SECRET_OLD_ERROR";
+    renderer.details(data.snapshot.calendars[0].events[0], data.snapshot.calendars[0]);
+    const classes = new Set();
+    const header = {
+        dataset: { orderCalendar: "alice" },
+        closest(selector) { return selector === "#grid th[data-order-calendar]" ? this : null; },
+        classList: { add(name) { classes.add(name); }, remove(name) { classes.delete(name); } },
+    };
+    renderer.dispatch("dragstart", header, null, { dataTransfer: { setData() {} } });
+    assert.ok(classes.has("dragging"));
+    let reject;
+    renderer.useFetch(() => new Promise((resolve, fail) => { reject = fail; }));
+    const move = {
+        dataset: { moveCalendar: "alice", direction: "right" },
+        closest(selector) { return selector === "[data-move-calendar]" ? this : null; },
+    };
+    renderer.dispatch("click", move);
+    await Promise.resolve();
+
+    renderer.apply({ ...data, revision: 2, settings: { ...data.settings, shareMode: true } });
+    assert.ok(!classes.has("dragging"));
+    assert.equal(renderer.element("popover").innerHTML, "");
+    for (const id of ["grid", "chips", "status", "preset-store-error", "date-picker-error", "calendar-hint"]) {
+        assert.doesNotMatch(`${renderer.element(id).innerHTML} ${renderer.element(id).textContent}`, /SECRET_/);
+    }
+    reject(new Error("SECRET_DELAYED_ERROR"));
+    await renderer.waitForOrder();
+    assert.match(renderer.element("calendar-order-message").textContent, /失敗/);
+    assert.doesNotMatch(renderer.element("calendar-order-message").textContent, /SECRET_/);
+});
+
 test("matching private timed and all-day events have visible leading badges and reciprocal peer details", () => {
     for (const allDay of [false, true]) {
         const renderer = createRenderer();
@@ -973,7 +1999,7 @@ test("minimum-height timed events use compact shared badges", () => {
     const data = sharedData();
     for (const calendar of data.snapshot.calendars) calendar.events[0].end = "2026-10-12T18:15:00";
     const html = createRenderer().render(data);
-    assert.equal([...html.matchAll(/class="ev masked compact"/g)].length, 2);
+    assert.equal([...html.matchAll(/class="ev masked compact(?: join-(?:left|right))?"/g)].length, 2);
     assert.equal([...html.matchAll(/height:14px/g)].length, 2);
     assert.equal([...html.matchAll(/>同1<\/span>/g)].length, 2);
 });
@@ -993,6 +2019,8 @@ test("shared markers coexist with completion badges and clear when a peer is rem
     assert.ok(!markup.includes('class="badge"'));
     bob.events[0].responseStatus = "declined";
     renderer.render({ ...data, settings: { ...data.settings, showDeclined: true } });
+    assert.ok(renderer.eventMarkup(event, alice, data.settings).includes('class="shared-badge"'));
+    renderer.render({ ...data, settings: { ...data.settings, showDeclined: false } });
     assert.ok(!renderer.eventMarkup(event, alice, data.settings).includes('class="shared-badge"'));
     bob.events[0].responseStatus = "";
     renderer.render(data);

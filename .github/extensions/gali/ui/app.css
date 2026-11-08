@@ -374,6 +374,11 @@ code {
     font-size: var(--text-body-small, 12px);
 }
 
+.legend[hidden],
+#policy-pattern-field[hidden] {
+    display: none;
+}
+
 .legend span {
     display: inline-flex;
     align-items: center;
@@ -403,6 +408,21 @@ code {
 .swatch.free {
     background: transparent;
     border-style: dashed;
+}
+
+.swatch.share {
+    border-color: #6e7781;
+    background: rgba(110, 119, 129, 0.22);
+}
+
+.swatch.share.declined {
+    border-style: dotted;
+    background: repeating-linear-gradient(135deg, rgba(110, 119, 129, 0.22) 0 4px, transparent 4px 8px);
+}
+
+.swatch.shared {
+    border-color: #8250df;
+    background: rgba(130, 80, 223, 0.22);
 }
 
 .swatch.badge {
@@ -592,8 +612,18 @@ td.daystart {
     border-left: 2px solid var(--gali-border);
 }
 
+/* Stretch connected all-day blocks to the height of the tallest cell. */
+table.cal tbody > tr.allday-row > td {
+    height: 1px;
+}
+
+.allday-row:not(.allday-last) .allday {
+    border-bottom: 0;
+}
+
 .allday {
     min-height: 22px;
+    height: 100%;
     padding: 2px;
     border-bottom: 1px solid var(--gali-border);
     display: flex;
@@ -604,6 +634,27 @@ td.daystart {
 .allday .ev {
     position: static;
     padding: 1px 4px;
+}
+
+.allday .ev.join-left,
+.allday .ev.join-right {
+    position: relative;
+    z-index: 1;
+    flex: 1 1 auto;
+}
+
+.allday .ev.join-left {
+    margin-left: -3px;
+    width: calc(100% + 3px);
+}
+
+.allday .ev.join-right {
+    margin-right: -3px;
+    width: calc(100% + 3px);
+}
+
+.allday .ev.join-left.join-right {
+    width: calc(100% + 6px);
 }
 
 .hours {
@@ -631,7 +682,9 @@ td.daystart {
 .col {
     position: relative;
     border-bottom: 1px solid var(--gali-border);
-    overflow: hidden;
+    /* Clip vertically while letting joined blocks cover the column separator. */
+    overflow: visible;
+    clip-path: inset(0 -1px 0 -1px);
 }
 
 .col .hline {
@@ -657,6 +710,7 @@ td.daystart {
 }
 
 .ev {
+    --ev-hatch: repeating-linear-gradient(135deg, var(--ev-fill) 0 4px, transparent 4px 8px);
     position: absolute;
     border-radius: 4px;
     border: 1px solid var(--ev-color, #3f7ee8);
@@ -671,8 +725,26 @@ td.daystart {
     width: 100%;
 }
 
+.ev.join-left {
+    border-left: 0;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+
+.ev.join-right {
+    border-right: 0;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.ev.sharing.join-left,
+.ev.sharing.join-right {
+    border-radius: 14px / 25%;
+    padding-inline: 8px;
+}
+
 .ev.masked {
-    background: repeating-linear-gradient(135deg, var(--ev-fill) 0 4px, transparent 4px 8px);
+    background: var(--ev-hatch);
 }
 
 .ev.transparent {
@@ -680,9 +752,36 @@ td.daystart {
     border-style: dashed;
 }
 
-.ev.declined {
+.ev.declined:not(.sharing) {
     opacity: 0.55;
     text-decoration: line-through;
+}
+
+.ev.sharing.declined {
+    border-style: dotted;
+}
+
+.ev.sharing:hover:not(:disabled) {
+    background: var(--ev-fill);
+}
+
+.ev.sharing.join-left,
+.ev.sharing.join-right,
+.ev.sharing.join-left:hover:not(:disabled),
+.ev.sharing.join-right:hover:not(:disabled) {
+    background: linear-gradient(var(--ev-fill), var(--ev-fill)), var(--background-color-default, #ffffff);
+}
+
+.ev.sharing.declined,
+.ev.sharing.declined:hover:not(:disabled) {
+    background: var(--ev-hatch);
+}
+
+.ev.sharing.declined.join-left,
+.ev.sharing.declined.join-right,
+.ev.sharing.declined.join-left:hover:not(:disabled),
+.ev.sharing.declined.join-right:hover:not(:disabled) {
+    background: var(--ev-hatch), var(--background-color-default, #ffffff);
 }
 
 .ev .t {
@@ -713,6 +812,11 @@ td.daystart {
     margin-right: 3px;
 }
 
+.ev.sharing .shared-badge {
+    border-color: var(--ev-color);
+    color: var(--ev-color);
+}
+
 .ev.compact .shared-badge {
     font-size: 8px;
     line-height: 8px;
@@ -721,6 +825,23 @@ td.daystart {
 .ev.peer-highlight {
     box-shadow: inset 0 0 0 2px var(--color-focus-outline, #3f7ee8);
     z-index: 3;
+}
+
+.ev.peer-highlight.join-left {
+    box-shadow: inset 0 2px var(--color-focus-outline, #3f7ee8),
+        inset 0 -2px var(--color-focus-outline, #3f7ee8),
+        inset -2px 0 var(--color-focus-outline, #3f7ee8);
+}
+
+.ev.peer-highlight.join-right {
+    box-shadow: inset 0 2px var(--color-focus-outline, #3f7ee8),
+        inset 0 -2px var(--color-focus-outline, #3f7ee8),
+        inset 2px 0 var(--color-focus-outline, #3f7ee8);
+}
+
+.ev.peer-highlight.join-left.join-right {
+    box-shadow: inset 0 2px var(--color-focus-outline, #3f7ee8),
+        inset 0 -2px var(--color-focus-outline, #3f7ee8);
 }
 
 /* ---------- free slots ---------- */

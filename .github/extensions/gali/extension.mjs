@@ -63,6 +63,7 @@ function overridesFromInput(input) {
         "building",
         "showDeclined",
         "showCompletionDiff",
+        "shareMode",
         "workStart",
         "workEnd",
         "showFreeSlots",
@@ -130,6 +131,7 @@ function describe(state, { includeEvents = false } = {}) {
         profile: payload.profile,
         settingsFile: settingsFileFor(payload.profile),
         view: payload.settings.view,
+        shareMode: payload.settings.shareMode,
         range: payload.range,
         loading: payload.loading,
         error: payload.error,
@@ -256,6 +258,10 @@ const canvas = createCanvas({
                 type: "boolean",
                 description:
                     "Show completion badges and their source calendars. Older CLIs show an inferred 補? badge with an unknown source. Display only; no extra gali call.",
+            },
+            shareMode: {
+                type: "boolean",
+                description: "Hide event details in the canvas and color matching events. This does not redact API or cached data.",
             },
             workStart: { type: "string", pattern: TIME_PATTERN },
             workEnd: { type: "string", pattern: TIME_PATTERN },
@@ -435,12 +441,13 @@ const canvas = createCanvas({
         },
         {
             name: "set_display",
-            description: "Change display-only options (declined events, free-slot panel, working hours, viewport height) and scan tuning.",
+            description: "Change display-only options (sharing mode, declined events, free-slot panel, working hours, viewport height) and scan tuning.",
             inputSchema: {
                 type: "object",
                 additionalProperties: false,
                 properties: {
                     showDeclined: { type: "boolean" },
+                    shareMode: { type: "boolean", description: "Hide event details in the canvas; API and cached data are not redacted." },
                     showFreeSlots: { type: "boolean" },
                     gridHeight: GRID_HEIGHT_SCHEMA,
                     workStart: { type: "string", pattern: TIME_PATTERN },
@@ -470,7 +477,7 @@ const canvas = createCanvas({
         {
             name: "get_schedule",
             description:
-                "Read what the canvas currently shows: per-calendar stats, shared free slots, and optionally every event.",
+                "Read per-calendar stats, shared free slots, and optionally event details. Sharing mode masks the canvas only; this action returns the original data.",
             inputSchema: {
                 type: "object",
                 additionalProperties: false,

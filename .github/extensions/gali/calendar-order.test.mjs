@@ -96,6 +96,47 @@ setTimeout(() => {
         assert.deepEqual(ids(other.snapshot.calendars), ["charlie", "alice", "bob"]);
     });
 
+    await t.test("sharing mode persists across panels without fetching or invalidating the scan", async () => {
+        const first = await startServer({ profile: "ordering", instanceId: "share-first" });
+        const second = await startServer({ profile: "ordering", instanceId: "share-second" });
+        servers.push(first, second);
+        const endpoint = (server, route) => {
+            const url = new URL(server.url);
+            return `${url.origin}${route}?token=${url.searchParams.get("token")}`;
+        };
+        const post = async (server, enabled) => {
+            const response = await fetch(endpoint(server, "/api/settings"), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ settings: { shareMode: enabled }, refresh: false }),
+            });
+            assert.equal(response.status, 200);
+            return response.json();
+        };
+        const beforeCalls = await calls();
+        const fetchedAt = state.snapshot.fetchedAt;
+        const scanAt = state.scan.fetchedAt;
+        const scanIndex = state.scanIndex;
+        const scanGeneration = state.scanGeneration;
+        const notifications = [];
+        const unsubscribe = state.subscribe((payload) => notifications.push(payload.settings.shareMode));
+        t.after(unsubscribe);
+
+        assert.equal((await loadSettings("ordering")).shareMode, false);
+        assert.equal((await post(first, true)).settings.shareMode, true);
+        assert.equal((await loadSettings("ordering")).shareMode, true);
+        assert.equal((await (await fetch(endpoint(second, "/api/bootstrap"))).json()).settings.shareMode, true);
+        assert.equal(state.snapshot.fetchedAt, fetchedAt);
+        assert.equal(state.scan.fetchedAt, scanAt);
+        assert.equal(state.scanIndex, scanIndex);
+        assert.equal(state.scanGeneration, scanGeneration);
+        assert.deepEqual(await calls(), beforeCalls);
+        assert.equal((await post(second, false)).settings.shareMode, false);
+        assert.equal((await loadSettings("ordering")).shareMode, false);
+        assert.deepEqual(notifications, [true, false]);
+        assert.deepEqual(await calls(), beforeCalls);
+    });
+
     await t.test("HTTP moves validate current IDs and merge with concurrent settings edits", async () => {
         const server = await startServer({ profile: "ordering", instanceId: "order-test" });
         servers.push(server);

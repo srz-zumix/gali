@@ -88,18 +88,24 @@ test("recurring occurrences stay separate and numbering is chronological and ord
     assert.equal(differentOccurrences.size, 0);
 });
 
-test("declined, cancelled, and errored calendars do not count as matching participants", () => {
+test("declined copies match by identity while cancelled and errored copies are excluded", () => {
     const calendars = [
         calendar("alice", [event("meeting")]),
         calendar("declined", [event("meeting", { responseStatus: "declined" })]),
         calendar("cancelled", [event("meeting", { status: "cancelled" })]),
         calendar("errored", [event("meeting")], { error: "unavailable" }),
     ];
-    assert.equal(buildSharedEventGroups(calendars).size, 0);
-    calendars.push(calendar("tentative", [event("meeting", { responseStatus: "tentative" })]));
-    const groups = buildSharedEventGroups(calendars);
+    let groups = buildSharedEventGroups(calendars);
     assert.equal(groups.size, 2);
-    assert.deepEqual(entry(groups, "alice", "meeting").calendars.map((item) => item.id), ["alice", "tentative"]);
+    assert.equal(entry(groups, "alice", "meeting"), entry(groups, "declined", "meeting"));
+    assert.deepEqual(entry(groups, "alice", "meeting").calendars.map((item) => item.id), ["alice", "declined"]);
+    assert.equal(entry(groups, "cancelled", "meeting"), undefined);
+    assert.equal(entry(groups, "errored", "meeting"), undefined);
+
+    calendars.push(calendar("tentative", [event("meeting", { responseStatus: "tentative" })]));
+    groups = buildSharedEventGroups(calendars);
+    assert.equal(groups.size, 3);
+    assert.deepEqual(entry(groups, "alice", "meeting").calendars.map((item) => item.id), ["alice", "declined", "tentative"]);
 });
 
 test("duplicate copies in one calendar do not inflate the number of calendars", () => {

@@ -249,9 +249,15 @@ async function handleRequest(req, res, { profile, instanceId, token, port, strea
                 sendJson(res, 400, { error: "カレンダー ID を指定してください。" });
                 return;
             }
-            await state.updateSettings((settings) => ({
-                calendars: [...settings.calendars, ...body.calendars.map((id) => ({ id: id.trim(), label: "" }))],
-            }));
+            try {
+                await state.updateSettings((settings) => ({
+                    calendars: [...settings.calendars, ...body.calendars.map((id) => ({ id: id.trim(), label: "" }))],
+                }));
+            } catch (error) {
+                // A failed mutation must not look successful to the client.
+                sendJson(res, 500, { ...state.toJSON(), error: toMessage(error), code: "calendar_add_failed" });
+                return;
+            }
         } else if (route === "/api/calendars/remove") {
             // Sent as an operation, not a replacement list: a list computed in
             // the browser can be built on settings that have since changed.

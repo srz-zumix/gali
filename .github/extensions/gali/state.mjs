@@ -464,6 +464,7 @@ export class ProfileState {
                 const events = mergeEventChunks(chunks.map((chunk) => ({
                     events: chunk.events,
                     at: Date.parse(chunk.fetchedAt),
+                    times: chunk.eventTimes,
                 }))).filter((event) => eventInRange(event, range));
                 const hidden = events.filter((event) => !event.detailsVisible).length;
                 const declined = events.filter((event) => event.responseStatus === "declined").length;
@@ -654,7 +655,7 @@ export class ProfileState {
                         target.holiday ? {} : options,
                         { force },
                     );
-                    const chunk = { events: result.events, at: Date.parse(result.fetchedAt) };
+                    const chunk = { events: result.events, at: Date.parse(result.fetchedAt), times: result.eventTimes };
                     if (target.holiday) holidayChunks.push(chunk);
                     else {
                         if (!eventsByCalendar.has(target.entry.id)) eventsByCalendar.set(target.entry.id, []);

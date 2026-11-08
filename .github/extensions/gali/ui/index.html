@@ -32,10 +32,15 @@
                     <button type="button" data-view="week">週</button>
                 </div>
                 <button type="button" id="refresh" title="gali で再取得">再取得</button>
+                <button type="button" id="toggle-share" aria-pressed="false" disabled>共有モード</button>
                 <button type="button" id="toggle-adjust" aria-expanded="false">調整</button>
                 <button type="button" id="toggle-settings" aria-expanded="false">設定</button>
             </div>
             <p class="status error" id="date-picker-error" role="alert" hidden></p>
+            <p class="status error" id="share-mode-error" role="alert" hidden>
+                <span id="share-mode-error-text"></span>
+                <button type="button" id="retry-share-mode">再試行</button>
+            </p>
 
             <div class="row chips" id="chips"></div>
             <p class="hint" id="calendar-order-message" role="status" aria-live="polite" hidden></p>
@@ -148,7 +153,7 @@
                 <fieldset class="field">
                     <legend>表示</legend>
                     <label class="check"><input type="checkbox" id="show-declined" /> 辞退した予定も表示する</label>
-                    <p class="hint">辞退した予定は薄く表示され、空き時間の計算には含めません。</p>
+                    <p class="hint">辞退した予定は通常表示では薄く、共有モードでは点線と斜線で表示され、空き時間の計算には含めません。</p>
                     <label class="check"><input type="checkbox" id="show-free" /> 共通の空き時間を表示する</label>
                     <div class="inline">
                         <label for="work-start">勤務時間</label>
@@ -172,7 +177,7 @@
                         <label for="holiday-cal">祝日カレンダー</label>
                         <input id="holiday-cal" type="text" placeholder="en.japanese#holiday@group.v.calendar.google.com" />
                     </div>
-                    <div class="inline">
+                    <div class="inline" id="policy-pattern-field">
                         <label for="policy-patterns">ポリシー枠のタイトル</label>
                         <input id="policy-patterns" type="text" placeholder="NoMTG, ノーミーティング" />
                     </div>
@@ -183,7 +188,7 @@
                 </p>
             </section>
 
-            <div class="legend">
+            <div class="legend" id="normal-legend">
                 <span><i class="swatch solid"></i>詳細まで閲覧可</span>
                 <span><i class="swatch masked"></i>予定あり（詳細非公開）</span>
                 <span><i class="swatch free"></i>空き時間扱い</span>
@@ -191,6 +196,12 @@
                     title="相手のカレンダーの公開設定上、本来は見えないはずのタイトル。gali が自分の参照カレンダーから補完したと推定されるもの。"
                     ><i class="swatch badge">補</i>参照カレンダーで補完（推定）</span
                 >
+            </div>
+            <div class="legend" id="share-legend" hidden>
+                <span><i class="swatch share"></i>予定あり</span>
+                <span><i class="swatch shared"></i>共通予定（同じ色・番号）</span>
+                <span><i class="swatch share declined"></i>辞退（点線・斜線）</span>
+                <span>メンバー名・時間帯・辞退状況は表示されます</span>
             </div>
 
             <p class="status" id="status" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -209,13 +220,13 @@
             <table class="date-calendar-grid" role="grid" aria-labelledby="date-calendar-month">
                 <thead>
                     <tr>
+                        <th scope="col" abbr="日曜日">日</th>
                         <th scope="col" abbr="月曜日">月</th>
                         <th scope="col" abbr="火曜日">火</th>
                         <th scope="col" abbr="水曜日">水</th>
                         <th scope="col" abbr="木曜日">木</th>
                         <th scope="col" abbr="金曜日">金</th>
                         <th scope="col" abbr="土曜日">土</th>
-                        <th scope="col" abbr="日曜日">日</th>
                     </tr>
                 </thead>
                 <tbody id="date-calendar-days"></tbody>

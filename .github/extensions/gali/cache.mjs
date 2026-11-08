@@ -30,7 +30,7 @@ function signature(calendarId, since, until, options, galiBin) {
     const parts = [
         // Bump when the cached record shape or the derived fields change, so
         // entries written by an older build are not served.
-        "v7",
+        "v8",
         galiBin,
         // gali resolves date-only --since/--until in $TZ, so the same date
         // strings mean different instants under a different timezone.
@@ -79,9 +79,19 @@ async function writeDisk(key, record) {
  * occurrence appears in chunks of different ages, prefer the newer copy.
  */
 export function mergeEventChunks(chunks) {
+    return mergeTimedEventChunks(chunks).events;
+}
+
+/**
+ * Like mergeEventChunks, but also returns each surviving event's own fetch
+ * time. A chunk may carry `times` (parallel to `events`) when its events were
+ * fetched at different moments, e.g. a week split into several requests.
+ */
+export function mergeTimedEventChunks(chunks) {
     const events = new Map();
-    for (const { events: items, at } of chunks) {
-        for (const event of items) {
+    for (const { events: items, at: chunkAt, times } of chunks) {
+        items.forEach((event, index) => {
+            const at = Number.isFinite(times?.[index]) ? times[index] : chunkAt;
             // Google event IDs identify individual recurring occurrences even
             // if one is moved; a series-wide iCalUID needs the start as well.
             const key = event.id
@@ -91,10 +101,11 @@ export function mergeEventChunks(chunks) {
                     : JSON.stringify(["event", event]);
             const previous = events.get(key);
             if (!previous || at > previous.at) events.set(key, { event, at });
-        }
+        });
     }
-    return [...events.values()].map(({ event }) => event)
-        .sort((a, b) => String(a.start).localeCompare(String(b.start)));
+    const merged = [...events.values()]
+        .sort((a, b) => String(a.event.start).localeCompare(String(b.event.start)));
+    return { events: merged.map(({ event }) => event), times: merged.map(({ at }) => at) };
 }
 
 function addCalendarDays(iso, days) {
@@ -149,14 +160,15 @@ export function createCalendarCache({
             const middle = addCalendarDays(options.since, Math.ceil(dayCount / 2) - 1);
             const first = await collectRange(calendarId, { ...options, until: middle });
             const second = await collectRange(calendarId, { ...options, since: addCalendarDays(middle, 1) });
+            // Keep per-event fetch times: the record's `at` is the oldest leaf
+            // (for expiry), but merging with overlapping weeks must compare
+            // each occurrence by when it was actually fetched.
+            const merged = mergeTimedEventChunks([
+                { events: first.value.events, at: first.at, times: first.value.eventTimes },
+                { events: second.value.events, at: second.at, times: second.value.eventTimes },
+            ]);
             return {
-                value: {
-                    ...second.value,
-                    events: mergeEventChunks([
-                        { events: first.value.events, at: first.at },
-                        { events: second.value.events, at: second.at },
-                    ]),
-                },
+                value: { ...second.value, events: merged.events, eventTimes: merged.times },
                 at: Math.min(first.at, second.at),
             };
         }

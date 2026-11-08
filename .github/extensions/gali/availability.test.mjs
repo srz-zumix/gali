@@ -90,6 +90,19 @@ test("a declined attendee is not a blocker or a shared-meeting participant", () 
     assert.ok(result.candidates.every(candidate => candidate.adjacentMeeting === null));
 });
 
+test("matching invitations declined by everyone do not create busy or shared meetings", () => {
+    const calendars = [
+        { id: "alice", events: [event("shared", "10:00", "11:00", "declined")] },
+        { id: "bob", events: [event("shared", "10:00", "11:00", "declined")] },
+    ];
+    const settings = { ...DEFAULT_SETTINGS, showDeclined: true, participantCount: 2, includePast: true };
+    const index = buildIndex(calendars, [DAY], settings);
+    assert.deepEqual(busyIntervals(calendars, DAY), []);
+    assert.equal(index.meetings.size, 0);
+    assert.deepEqual(findSharedMeetings(index, { minAttendees: 2 }), []);
+    assert.equal(scanSlots(index, [DAY], settings, { durationMinutes: 30 }).find((slot) => slot.start === 600).blockers.length, 0);
+});
+
 test("a scan started today does not propose start times that have passed", () => {
     const now = new Date();
     const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
