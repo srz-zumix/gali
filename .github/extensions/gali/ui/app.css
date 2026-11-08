@@ -26,7 +26,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
     font: inherit;
     color: inherit;
 }
@@ -54,7 +55,9 @@ button[aria-pressed="true"] {
 }
 
 input[type="text"],
-input[type="time"] {
+input[type="time"],
+input[type="date"],
+select {
     background: transparent;
     border: 1px solid var(--gali-border);
     border-radius: 6px;
@@ -95,6 +98,114 @@ input[type="text"] {
 
 .grow {
     flex: 1 1 auto;
+}
+
+.range-heading button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-color: transparent;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+}
+
+.range-heading button:hover:not(:disabled),
+.range-heading button[aria-expanded="true"] {
+    background: color-mix(in srgb, var(--text-color-default, #1f2328) 8%, transparent);
+}
+
+.range-heading button:focus-visible {
+    outline: 2px solid var(--color-focus-outline, #3f7ee8);
+    outline-offset: 1px;
+}
+
+.range-caret {
+    color: var(--gali-muted);
+    font-size: 1.125em;
+}
+
+.date-dialog {
+    width: min(340px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    padding: 14px;
+    border: 1px solid var(--gali-border);
+    border-radius: 8px;
+    background: var(--background-color-default, #ffffff);
+    color: var(--text-color-default, #1f2328);
+    box-shadow: 0 8px 30px rgb(0 0 0 / 20%);
+}
+
+.date-dialog::backdrop {
+    background: rgb(0 0 0 / 30%);
+}
+
+.date-dialog-heading,
+.date-calendar-navigation {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.date-dialog-heading h2,
+.date-calendar-navigation h3 {
+    margin: 0;
+    font-size: var(--text-body-medium, 14px);
+    font-weight: var(--font-weight-semibold, 600);
+}
+
+.date-calendar-navigation {
+    margin: 12px 0 8px;
+}
+
+.date-calendar-grid {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    text-align: center;
+}
+
+.date-calendar-grid th {
+    color: var(--gali-muted);
+    font-size: var(--text-body-small, 12px);
+    font-weight: normal;
+}
+
+.date-calendar-grid td {
+    height: 36px;
+    padding: 2px;
+    border: 0;
+    vertical-align: middle;
+}
+
+.date-calendar-grid button {
+    width: 100%;
+    min-height: 32px;
+    padding: 2px;
+    border-color: transparent;
+}
+
+.date-calendar-grid td.in-range button {
+    background: color-mix(in srgb, var(--true-color-blue, #3f7ee8) 10%, transparent);
+}
+
+.date-calendar-grid td[aria-selected="true"] button {
+    background: color-mix(in srgb, var(--true-color-blue, #3f7ee8) 22%, transparent);
+    border-color: var(--true-color-blue, #3f7ee8);
+}
+
+.date-calendar-grid button[aria-current="date"] {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.date-calendar-footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 8px;
 }
 
 h1 {
@@ -171,8 +282,26 @@ h1 {
     color: var(--gali-muted);
 }
 
+.chip-order {
+    display: inline-flex;
+    gap: 1px;
+}
+
 .chips .empty {
     color: var(--gali-muted);
+}
+
+.preset-toolbar select {
+    min-width: 150px;
+    max-width: 100%;
+}
+
+.preset-toolbar label {
+    color: var(--gali-muted);
+}
+
+#preset-delete-confirm[hidden] {
+    display: none;
 }
 
 .panel {
@@ -294,6 +423,31 @@ code {
     min-height: 16px;
 }
 
+.status.loading::before {
+    content: "";
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin: 0 6px 0 1px;
+    vertical-align: -1px;
+    border: 2px solid var(--border-color-default, #d0d7de);
+    border-top-color: var(--true-color-blue, #3f7ee8);
+    border-radius: 50%;
+    animation: gali-spin 0.8s linear infinite;
+}
+
+@keyframes gali-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .status.loading::before {
+        animation-duration: 2s;
+    }
+}
+
 .status.error {
     color: var(--true-color-red, #cf222e);
     white-space: pre-wrap;
@@ -384,6 +538,29 @@ table.cal th.owner {
     color: var(--gali-muted);
     border-bottom: 1px solid var(--gali-border);
     top: var(--gali-day-head, 28px);
+}
+
+table.cal th.owner[draggable="true"] {
+    cursor: grab;
+    user-select: none;
+}
+
+table.cal th.owner.dragging {
+    cursor: grabbing;
+    opacity: 0.5;
+}
+
+table.cal th.owner.drop-before {
+    box-shadow: inset 3px 0 var(--true-color-blue, #3f7ee8);
+}
+
+table.cal th.owner.drop-after {
+    box-shadow: inset -3px 0 var(--true-color-blue, #3f7ee8);
+}
+
+th.owner .drag-handle {
+    margin-right: 3px;
+    color: var(--gali-muted);
 }
 
 th.owner .owner-name {

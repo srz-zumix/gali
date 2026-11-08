@@ -5,6 +5,9 @@ import { HOUR_HEIGHT, MIN_GRID_HEIGHT, computeGeometry, clampGridHeight } from "
 import { buildSharedEventGroups, calendarEventKey } from "./meetings.mjs";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+const CALENDAR_WEEKDAYS = ["月", "火", "水", "木", "金", "土", "日"];
+const MIN_ANCHOR_DATE = "0101-01-01";
+const MAX_ANCHOR_DATE = "9998-12-31";
 const RESPONSE_LABELS = {
     accepted: "参加",
     declined: "辞退",
@@ -16,6 +19,8 @@ const $ = (id) => document.getElementById(id);
 const state = {
     data: null, index: new Map(), whatIf: new Map(), scanId: null,
     sharedEvents: new Map(), hoveredEvent: null, focusedEvent: null,
+    presetBusy: false, calendarDrag: null, orderQueue: Promise.resolve(), orderFailures: 0,
+    dateAnchor: null, datePending: null, dateCalendar: null,
 };
 
 /* ---------------- helpers ---------------- */
@@ -49,7 +54,9 @@ function formatRange(range) {
     const last = range.days[range.days.length - 1];
     const start = dayStartOf(first);
     if (first === last) return `${start.getFullYear()}年 ${formatDayLabel(first)}`;
-    return `${start.getFullYear()}年 ${formatDayLabel(first)} – ${formatDayLabel(last)}`;
+    const end = dayStartOf(last);
+    const endYear = end.getFullYear() === start.getFullYear() ? "" : `${end.getFullYear()}年 `;
+    return `${start.getFullYear()}年 ${formatDayLabel(first)} – ${endYear}${formatDayLabel(last)}`;
 }
 
 /* ---------------- server calls ---------------- */
@@ -67,11 +74,236 @@ async function post(path, body) {
         body: JSON.stringify(body || {}),
     });
     const payload = await response.json();
+    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
     apply(payload);
     return payload;
 }
 
 const patchSettings = (patch, refresh = true) => post("/api/settings", { settings: patch, refresh });
+
+function selectedAnchor(data) {
+    return data?.range?.anchor || data?.settings?.anchor || data?.range?.days?.[0] || localDate(new Date());
+}
+
+function validAnchorDate(value) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!match || value < MIN_ANCHOR_DATE || value > MAX_ANCHOR_DATE) return false;
+    const [, yearText, monthText, dayText] = match;
+    const year = Number(yearText);
+    const month = Number(monthText);
+    const day = Number(dayText);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+function datePickerError(message) {
+    const element = $("date-picker-error");
+    element.hidden = !message;
+    element.textContent = message;
+}
+
+function displayedStart(data) {
+    const start = data?.range?.days?.[0];
+    return validAnchorDate(start) ? start : selectedAnchor(data);
+}
+
+function renderDatePicker(data) {
+    $("date-picker-toggle").disabled = false;
+    const anchor = selectedAnchor(data);
+    if (state.datePending?.value === anchor) state.datePending = null;
+    if (!state.datePending && state.dateAnchor !== anchor) {
+        state.dateAnchor = anchor;
+        datePickerError("");
+    }
+}
+
+async function commitDateSelection(selected) {
+    if (!validAnchorDate(selected)) {
+        datePickerError("有効な日付を選択してください（0101-01-01〜9998-12-31）。");
+        return;
+    }
+    datePickerError("");
+    if (state.datePending?.value === selected) return;
+    if (!state.datePending && selected === displayedStart(state.data)) return;
+    const request = { value: selected };
+    state.datePending = request;
+    try {
+        const payload = await patchSettings({ anchor: selected });
+        if (state.datePending !== request) return;
+        state.datePending = null;
+        renderDatePicker(state.data);
+        if (payload.error && selectedAnchor(payload) !== selected) {
+            datePickerError(`日付を変更できませんでした: ${payload.error}`);
+        }
+    } catch (error) {
+        if (state.datePending !== request) return;
+        state.datePending = null;
+        renderDatePicker(state.data);
+        datePickerError(`日付を変更できませんでした: ${error.message || error}`);
+    }
+}
+
+function dateCalendarISO(date) {
+    return `${String(date.getUTCFullYear()).padStart(4, "0")}-${pad2(date.getUTCMonth() + 1)}-${pad2(date.getUTCDate())}`;
+}
+
+function shiftCalendarMonth(iso, amount) {
+    const [year, month, day] = iso.split("-").map(Number);
+    const first = new Date(Date.UTC(year, month - 1 + amount, 1));
+    const nextYear = first.getUTCFullYear();
+    const nextMonth = first.getUTCMonth();
+    if (nextYear < 101 || nextYear > 9998) return null;
+    const lastDay = new Date(Date.UTC(nextYear, nextMonth + 1, 0)).getUTCDate();
+    first.setUTCDate(Math.min(day, lastDay));
+    return dateCalendarISO(first);
+}
+
+function renderDateCalendar({ focusDay = true } = {}) {
+    const calendar = state.dateCalendar;
+    if (!calendar) return;
+    const [year, month] = calendar.focus.split("-").map(Number);
+    const first = new Date(Date.UTC(year, month - 1, 1));
+    const leading = (first.getUTCDay() + 6) % 7;
+    const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate();
+    const today = localDate(new Date());
+    const rows = [];
+    for (let offset = 0; offset < Math.ceil((leading + lastDay) / 7) * 7; offset += 7) {
+        const cells = [];
+        for (let column = 0; column < 7; column += 1) {
+            const day = offset + column - leading + 1;
+            if (day < 1 || day > lastDay) {
+                cells.push('<td role="presentation"></td>');
+                continue;
+            }
+            const iso = `${String(year).padStart(4, "0")}-${pad2(month)}-${pad2(day)}`;
+            const selected = iso === calendar.selected;
+            const focused = iso === calendar.focus;
+            const current = iso === today ? ' aria-current="date"' : "";
+            const inRange = calendar.range.has(iso) ? ' class="in-range"' : "";
+            cells.push(`<td role="gridcell" aria-selected="${selected}"${inRange}><button type="button" data-picker-date="${iso}" tabindex="${focused ? 0 : -1}" aria-label="${year}年${month}月${day}日 ${CALENDAR_WEEKDAYS[column]}曜日"${current}>${day}</button></td>`);
+        }
+        rows.push(`<tr>${cells.join("")}</tr>`);
+    }
+    $("date-calendar-month").textContent = `${year}年${month}月`;
+    $("date-calendar-prev").disabled = !shiftCalendarMonth(calendar.focus, -1);
+    $("date-calendar-next").disabled = !shiftCalendarMonth(calendar.focus, 1);
+    const days = $("date-calendar-days");
+    days.innerHTML = rows.join("");
+    if (focusDay) days.querySelector(`[data-picker-date="${calendar.focus}"]`)?.focus();
+}
+
+function moveDateCalendarMonths(amount, focusDay = true) {
+    if (!state.dateCalendar) return;
+    const next = shiftCalendarMonth(state.dateCalendar.focus, amount);
+    if (!next) return;
+    state.dateCalendar.focus = next;
+    renderDateCalendar({ focusDay });
+    if (!focusDay) {
+        const button = $(amount < 0 ? "date-calendar-prev" : "date-calendar-next");
+        (button.disabled ? $("date-calendar-month") : button).focus();
+    }
+}
+
+function moveDateCalendarDays(amount) {
+    if (!state.dateCalendar) return;
+    const date = new Date(`${state.dateCalendar.focus}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + amount);
+    const next = dateCalendarISO(date);
+    if (!validAnchorDate(next)) return;
+    state.dateCalendar.focus = next;
+    renderDateCalendar();
+}
+
+function openDateCalendar() {
+    if (state.dateCalendar) return;
+    const start = displayedStart(state.data);
+    const selected = validAnchorDate(start) ? start : localDate(new Date());
+    const range = new Set((state.data?.range?.days || []).filter(validAnchorDate));
+    state.dateCalendar = { selected, focus: selected, range };
+    try {
+        $("date-calendar").showModal();
+    } catch (error) {
+        state.dateCalendar = null;
+        datePickerError(`カレンダーを開けませんでした: ${error.message || error}`);
+        return;
+    }
+    $("date-picker-toggle").setAttribute("aria-expanded", "true");
+    renderDateCalendar();
+}
+
+function chooseCalendarDate(date) {
+    if (!validAnchorDate(date)) {
+        datePickerError("有効な日付を選択してください（0101-01-01〜9998-12-31）。");
+        return;
+    }
+    const request = commitDateSelection(date);
+    $("date-calendar").close();
+    return request;
+}
+
+function calendarOrderMessage(message, isError = false) {
+    const element = $("calendar-order-message");
+    element.hidden = !message;
+    element.className = isError ? "status error" : "hint";
+    element.textContent = message;
+}
+
+function enqueueCalendarOperation(task) {
+    const operation = state.orderQueue.then(task);
+    state.orderQueue = operation.then(() => {}, () => {});
+    return operation;
+}
+
+function moveCalendar(input) {
+    return enqueueCalendarOperation(async () => {
+        calendarOrderMessage("");
+        try {
+            await post("/api/calendars/move", input);
+            const calendars = state.data.settings.calendars;
+            const index = calendars.findIndex((entry) => entry.id === input.id);
+            if (index >= 0) {
+                const entry = calendars[index];
+                const displayed = state.data.snapshot?.calendars.find((calendar) => calendar.id === entry.id);
+                calendarOrderMessage(`${displayed?.label || entry.label || entry.id} を ${index + 1} 番目に移動しました。`);
+            }
+        } catch (error) {
+            state.orderFailures += 1;
+            calendarOrderMessage(`並び替えに失敗しました: ${error.message || error}`, true);
+        }
+    });
+}
+
+function presetMessage(message, isError = false) {
+    const element = $("preset-message");
+    element.hidden = !message;
+    element.className = isError ? "status error" : "hint";
+    element.textContent = message;
+}
+
+async function postPreset(path, body) {
+    if (state.presetBusy) return null;
+    state.presetBusy = true;
+    presetMessage("");
+    if (state.data) renderPresets(state.data);
+    try {
+        const orderSensitive = ["/api/presets/create", "/api/presets/update", "/api/presets/apply"].includes(path);
+        const save = path === "/api/presets/create" || path === "/api/presets/update";
+        const failures = state.orderFailures;
+        const operation = () => {
+            if (save && state.orderFailures !== failures) {
+                throw new Error("直前の並び替えに失敗したため、保存を中止しました。");
+            }
+            return post(path, body);
+        };
+        return await (orderSensitive ? enqueueCalendarOperation(operation) : operation());
+    } catch (error) {
+        presetMessage(`プリセットを操作できませんでした: ${error.message || error}`, true);
+        return null;
+    } finally {
+        state.presetBusy = false;
+        if (state.data) renderPresets(state.data);
+    }
+}
 
 /* ---------------- event placement ---------------- */
 
@@ -265,7 +497,8 @@ function renderGrid(data) {
                   calendars
                       .map(
                           (calendar) =>
-                              `<th class="owner" title="${escapeHtml(calendar.id)}"><span class="owner-name"><span class="dot" style="background:${calendar.color}"></span>${escapeHtml(calendar.label)}</span></th>`,
+                              `<th class="owner" scope="col" draggable="true" data-order-calendar="${escapeHtml(calendar.id)}"
+                                  title="${escapeHtml(`${calendar.id}\nドラッグして列を並べ替え`)}"><span class="owner-name"><span class="drag-handle" aria-hidden="true">⋮⋮</span><span class="dot" style="background:${calendar.color}"></span>${escapeHtml(calendar.label)}</span></th>`,
                       )
                       .join(""),
               )
@@ -364,12 +597,16 @@ function renderFreeSlots(data) {
 function renderChips(data) {
     const chips = $("chips");
     const snapshot = data.snapshot;
+    const active = document.activeElement;
+    const focused = active?.dataset?.moveCalendar
+        ? { id: active.dataset.moveCalendar, direction: active.dataset.direction }
+        : null;
     if (!data.settings.calendars.length) {
         chips.innerHTML = '<span class="empty">カレンダー未設定</span>';
         return;
     }
     chips.innerHTML = data.settings.calendars
-        .map((entry) => {
+        .map((entry, index, entries) => {
             const found = snapshot && snapshot.calendars.find((calendar) => calendar.id === entry.id);
             const color = found ? found.color : "var(--gali-muted)";
             const label = (found && found.label) || entry.label || entry.id;
@@ -382,13 +619,58 @@ function renderChips(data) {
                     : "";
                 meta = `<span class="meta">${found.stats.total} 件${hidden}${declined}</span>`;
             }
+            const controls = entries.length > 1
+                ? `<span class="chip-order">
+                    <button type="button" data-move-calendar="${escapeHtml(entry.id)}" data-direction="left"
+                        aria-label="${escapeHtml(`${label}を左へ移動`)}" title="左へ移動" ${index === 0 ? "disabled" : ""}>←</button>
+                    <button type="button" data-move-calendar="${escapeHtml(entry.id)}" data-direction="right"
+                        aria-label="${escapeHtml(`${label}を右へ移動`)}" title="右へ移動" ${index === entries.length - 1 ? "disabled" : ""}>→</button>
+                </span>`
+                : "";
             return `<span class="chip" title="${escapeHtml(`${entry.id}${found && found.error ? `\n${found.error}` : ""}`)}">
                 <i class="dot" style="background:${color}"></i>
-                <span class="name">${escapeHtml(label)}</span>${meta}
+                <span class="name">${escapeHtml(label)}</span>${meta}${controls}
                 <button type="button" data-remove="${escapeHtml(entry.id)}" title="削除">×</button>
             </span>`;
         })
         .join("");
+    if (focused) {
+        const buttons = [...chips.querySelectorAll("button[data-move-calendar]")];
+        const same = buttons.find((button) => button.dataset.moveCalendar === focused.id
+            && button.dataset.direction === focused.direction && !button.disabled);
+        const other = buttons.find((button) => button.dataset.moveCalendar === focused.id && !button.disabled);
+        (same || other)?.focus({ preventScroll: true });
+    }
+}
+
+function renderPresets(data) {
+    const presets = Array.isArray(data.presets) ? data.presets : [];
+    const select = $("preset-select");
+    const previous = select.value || "";
+    const options = `<option value="">プリセットを選択</option>${presets
+        .map((preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name)}（${preset.calendars.length}人）</option>`)
+        .join("")}`;
+    const signature = JSON.stringify(presets.map((preset) => [preset.id, preset.name, preset.calendars.length]));
+    if (select.dataset.optionsSignature !== signature) {
+        select.innerHTML = options;
+        select.dataset.optionsSignature = signature;
+        select.value = presets.some((preset) => preset.id === previous) ? previous : "";
+    }
+    const selected = presets.find((preset) => preset.id === select.value);
+    if (!selected) $("preset-delete-confirm").hidden = true;
+    select.disabled = state.presetBusy || !presets.length;
+    $("apply-preset").disabled = state.presetBusy || !selected;
+    $("update-preset").disabled = state.presetBusy || !selected || !data.settings.calendars.length;
+    $("delete-preset").disabled = state.presetBusy || !selected;
+    $("confirm-delete-preset").disabled = state.presetBusy || !selected;
+    $("refresh-presets").disabled = state.presetBusy;
+    $("save-preset").disabled = state.presetBusy || !data.settings.calendars.length || !$("preset-name").value.trim();
+    $("preset-summary").textContent = selected
+        ? `${selected.name}: ${selected.calendars.map((entry) => entry.label || entry.id).join("、")}`
+        : "プリセットを選択するとメンバーを確認できます。";
+    const error = $("preset-store-error");
+    error.hidden = !data.presetError;
+    error.textContent = data.presetError || "";
 }
 
 function renderSettings(data) {
@@ -569,20 +851,27 @@ function renderStatus(data) {
         status.textContent = errors.join("\n");
         return;
     }
-    status.className = "status";
     if (data.loading) {
+        status.className = "status loading";
         status.textContent = "gali で取得中…";
     } else if (data.snapshot) {
+        status.className = "status";
         const at = new Date(data.snapshot.fetchedAt);
         const refs = data.snapshot.usingReferences ? " / 参照カレンダーで非公開予定を補完" : "";
-        status.textContent = `最終取得 ${pad2(at.getHours())}:${pad2(at.getMinutes())}${refs}`;
+        const cache = data.snapshot.cache;
+        const cached = cache?.hits
+            ? ` / キャッシュ${cache.hits < cache.chunks ? ` ${cache.hits}/${cache.chunks}` : ""}`
+            : "";
+        status.textContent = `最終取得 ${pad2(at.getHours())}:${pad2(at.getMinutes())}${cached}${refs}`;
     } else {
+        status.className = "status";
         status.textContent = "";
     }
 }
 
 function apply(data) {
     if (!data || !data.settings) return;
+    if (Number.isInteger(data.revision) && Number.isInteger(state.data?.revision) && data.revision < state.data.revision) return;
     hidePopover();
     // what-if results describe one specific scan (its duration, window and
     // participants). Keeping them across a new or invalidated scan would show a
@@ -599,10 +888,12 @@ function apply(data) {
     }
     $("range-label").textContent = formatRange(data.range || (data.snapshot && data.snapshot.range));
     $("refresh").disabled = Boolean(data.loading);
+    renderDatePicker(data);
     renderSettings(data);
-    renderChips(data);
+    renderPresets(data);
+    if (!state.calendarDrag) renderChips(data);
     renderStatus(data);
-    renderGrid(data);
+    if (!state.calendarDrag) renderGrid(data);
     renderFreeSlots(data);
     renderAdjust(data);
     renderGridHeight();
@@ -800,17 +1091,78 @@ async function loadCalendarOptions() {
     }
 }
 
-function addCalendar() {
+async function addCalendar() {
     const input = $("add-input");
     const ids = input.value
         .split(/[,\s]+/)
         .map((value) => value.trim())
         .filter(Boolean);
     if (!ids.length) return;
-    const current = state.data ? state.data.settings.calendars : [];
-    input.value = "";
-    patchSettings({ calendars: [...current, ...ids.map((id) => ({ id, label: "" }))] });
+    try {
+        await enqueueCalendarOperation(() => post("/api/calendars/add", { calendars: ids }));
+        input.value = "";
+    } catch (error) {
+        $("calendar-hint").textContent = `追加に失敗しました: ${error.message || error}`;
+    }
 }
+
+function clearCalendarDropTarget() {
+    const target = state.calendarDrag?.target;
+    if (target) target.classList.remove("drop-before", "drop-after");
+    if (state.calendarDrag) state.calendarDrag.target = null;
+}
+
+function finishCalendarDrag() {
+    const drag = state.calendarDrag;
+    if (!drag) return;
+    clearCalendarDropTarget();
+    drag.source.classList.remove("dragging");
+    state.calendarDrag = null;
+    if (state.data) {
+        renderChips(state.data);
+        renderGrid(state.data);
+    }
+}
+
+function calendarDropPosition(event, header) {
+    const bounds = header.getBoundingClientRect();
+    return event.clientX < bounds.left + bounds.width / 2 ? "before" : "after";
+}
+
+document.addEventListener("dragstart", (event) => {
+    const header = event.target.closest("#grid th[data-order-calendar]");
+    if (!header || !event.dataTransfer) return;
+    state.calendarDrag = { id: header.dataset.orderCalendar, source: header, target: null };
+    header.classList.add("dragging");
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", "gali-calendar");
+});
+
+document.addEventListener("dragover", (event) => {
+    if (!state.calendarDrag) return;
+    const header = event.target.closest("#grid th[data-order-calendar]");
+    clearCalendarDropTarget();
+    if (!header) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+    if (header.dataset.orderCalendar === state.calendarDrag.id) return;
+    const position = calendarDropPosition(event, header);
+    header.classList.add(`drop-${position}`);
+    state.calendarDrag.target = header;
+});
+
+document.addEventListener("drop", (event) => {
+    if (!state.calendarDrag) return;
+    const header = event.target.closest("#grid th[data-order-calendar]");
+    const id = state.calendarDrag.id;
+    if (header) event.preventDefault();
+    const targetId = header?.dataset.orderCalendar;
+    const position = header ? calendarDropPosition(event, header) : null;
+    finishCalendarDrag();
+    if (targetId && targetId !== id) moveCalendar({ id, targetId, position });
+});
+
+document.addEventListener("dragend", finishCalendarDrag);
 
 document.addEventListener("click", (domEvent) => {
     const target = domEvent.target;
@@ -825,10 +1177,17 @@ document.addEventListener("click", (domEvent) => {
         patchSettings({ view: view.dataset.view });
         return;
     }
+    const move = target.closest("[data-move-calendar]");
+    if (move) {
+        moveCalendar({ id: move.dataset.moveCalendar, direction: move.dataset.direction });
+        return;
+    }
     const remove = target.closest("[data-remove]");
     if (remove) {
         const id = remove.dataset.remove;
-        post("/api/calendars/remove", { calendars: [id] });
+        enqueueCalendarOperation(() => post("/api/calendars/remove", { calendars: [id] })).catch((error) => {
+            calendarOrderMessage(`カレンダーを削除できませんでした: ${error.message || error}`, true);
+        });
         return;
     }
     const tab = target.closest("#adjust-tabs button");
@@ -858,7 +1217,101 @@ document.addEventListener("keydown", (domEvent) => {
 window.addEventListener("scroll", hidePopover, true);
 window.addEventListener("resize", hidePopover);
 
+$("date-picker-toggle").addEventListener("click", openDateCalendar);
+$("date-calendar-close").addEventListener("click", () => $("date-calendar").close());
+$("date-calendar").addEventListener("close", () => {
+    state.dateCalendar = null;
+    $("date-picker-toggle").setAttribute("aria-expanded", "false");
+    const active = document.activeElement;
+    if (!active || active === document.body || $("date-calendar").contains(active)) $("date-picker-toggle").focus();
+});
+$("date-calendar-prev").addEventListener("click", () => moveDateCalendarMonths(-1, false));
+$("date-calendar-next").addEventListener("click", () => moveDateCalendarMonths(1, false));
+$("date-calendar-today").addEventListener("click", () => chooseCalendarDate(localDate(new Date())));
+$("date-calendar-days").addEventListener("click", (event) => {
+    const day = event.target.closest("button[data-picker-date]");
+    if (day) return chooseCalendarDate(day.dataset.pickerDate);
+});
+$("date-calendar-days").addEventListener("keydown", (event) => {
+    if (!state.dateCalendar || !event.target.closest("button[data-picker-date]")) return;
+    const offsets = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 };
+    if (Object.hasOwn(offsets, event.key)) {
+        event.preventDefault();
+        moveDateCalendarDays(offsets[event.key]);
+    } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        const day = new Date(`${state.dateCalendar.focus}T00:00:00Z`).getUTCDay();
+        const offset = (day + 6) % 7;
+        moveDateCalendarDays(event.key === "Home" ? -offset : 6 - offset);
+    } else if (event.key === "PageUp" || event.key === "PageDown") {
+        event.preventDefault();
+        moveDateCalendarMonths((event.key === "PageUp" ? -1 : 1) * (event.shiftKey ? 12 : 1));
+    }
+});
+
 $("refresh").addEventListener("click", () => post("/api/refresh", {}));
+
+$("toggle-presets").addEventListener("click", (event) => {
+    const panel = $("presets");
+    panel.hidden = !panel.hidden;
+    event.currentTarget.setAttribute("aria-expanded", String(!panel.hidden));
+});
+
+$("preset-select").addEventListener("change", () => {
+    $("preset-delete-confirm").hidden = true;
+    presetMessage("");
+    if (state.data) renderPresets(state.data);
+});
+
+$("preset-name").addEventListener("input", () => {
+    if (state.data) renderPresets(state.data);
+});
+
+$("save-preset").addEventListener("click", async () => {
+    const input = $("preset-name");
+    const result = await postPreset("/api/presets/create", { name: input.value });
+    if (!result) return;
+    input.value = "";
+    $("preset-select").value = result.preset.id;
+    renderPresets(state.data);
+    presetMessage(`「${result.preset.name}」を保存しました。`);
+});
+
+$("apply-preset").addEventListener("click", async () => {
+    const result = await postPreset("/api/presets/apply", { id: $("preset-select").value });
+    if (result) presetMessage(`「${result.preset.name}」のメンバーに切り替えました。`);
+});
+
+$("update-preset").addEventListener("click", async () => {
+    const result = await postPreset("/api/presets/update", { id: $("preset-select").value });
+    if (!result) return;
+    $("preset-select").value = result.preset.id;
+    $("preset-delete-confirm").hidden = true;
+    renderPresets(state.data);
+    presetMessage(`「${result.preset.name}」を現在のメンバーで更新しました。`);
+});
+
+$("delete-preset").addEventListener("click", () => {
+    $("preset-delete-confirm").hidden = false;
+    $("confirm-delete-preset").focus();
+});
+
+$("cancel-delete-preset").addEventListener("click", () => {
+    $("preset-delete-confirm").hidden = true;
+    $("delete-preset").focus();
+});
+
+$("confirm-delete-preset").addEventListener("click", async () => {
+    const result = await postPreset("/api/presets/delete", { id: $("preset-select").value });
+    if (!result) return;
+    $("preset-delete-confirm").hidden = true;
+    presetMessage(`「${result.preset.name}」を削除しました。`);
+});
+
+$("refresh-presets").addEventListener("click", async () => {
+    const result = await postPreset("/api/presets/refresh", {});
+    if (result) presetMessage("プリセット一覧を更新しました。");
+});
 
 $("toggle-settings").addEventListener("click", (domEvent) => {
     const panel = $("settings");

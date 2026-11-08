@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 import { listCalendars, GaliError } from "./gali.mjs";
-import { getProfileState, shiftAnchor, todayISO } from "./state.mjs";
+import { PresetError, presetStore } from "./presets.mjs";
+import { CalendarOrderError, getProfileState, shiftAnchor, todayISO } from "./state.mjs";
 
 const UI_DIR = path.dirname(fileURLToPath(new URL("./ui/index.html", import.meta.url)));
 
@@ -205,9 +206,52 @@ async function handleRequest(req, res, { profile, instanceId, token, port, strea
         return;
     }
 
+    if (route.startsWith("/api/presets/")) {
+        try {
+            let preset;
+            if (route === "/api/presets/create") preset = await state.createMemberPreset(body.name);
+            else if (route === "/api/presets/update") preset = await state.updateMemberPreset(body.id);
+            else if (route === "/api/presets/delete") preset = await presetStore.remove(body.id);
+            else if (route === "/api/presets/apply") preset = await state.applyMemberPreset(body.id, { waitForRefresh: false });
+            else if (route === "/api/presets/refresh") await presetStore.refresh();
+            else {
+                sendJson(res, 404, { error: "not found" });
+                return;
+            }
+            sendJson(res, 200, { ...state.toJSON(), ...(preset ? { preset } : {}) });
+        } catch (error) {
+            const statuses = { invalid_preset: 400, preset_not_found: 404, preset_conflict: 409 };
+            const status = error instanceof PresetError ? (statuses[error.code] || 500) : 500;
+            sendJson(res, status, { error: toMessage(error), code: error.code || "preset_storage" });
+        }
+        return;
+    }
+
+    if (route === "/api/calendars/move") {
+        try {
+            await state.moveCalendar(body);
+            sendJson(res, 200, state.toJSON());
+        } catch (error) {
+            const status = error instanceof CalendarOrderError
+                ? (error.code === "invalid_calendar_move" ? 400 : 409)
+                : 500;
+            sendJson(res, status, { error: toMessage(error), code: error.code || "calendar_order_failed" });
+        }
+        return;
+    }
+
     try {
         if (route === "/api/settings") {
             await state.updateSettings(body.settings || {}, { refresh: body.refresh !== false });
+        } else if (route === "/api/calendars/add") {
+            if (!Array.isArray(body.calendars) || !body.calendars.length
+                || body.calendars.some((id) => typeof id !== "string" || !id.trim())) {
+                sendJson(res, 400, { error: "カレンダー ID を指定してください。" });
+                return;
+            }
+            await state.updateSettings((settings) => ({
+                calendars: [...settings.calendars, ...body.calendars.map((id) => ({ id: id.trim(), label: "" }))],
+            }));
         } else if (route === "/api/calendars/remove") {
             // Sent as an operation, not a replacement list: a list computed in
             // the browser can be built on settings that have since changed.

@@ -4,9 +4,9 @@
 // State is keyed by profile — never by canvas instance — so two panels showing
 // the same profile stay in sync and a reload rehydrates from disk.
 
-import { collectCalendar, GaliError, hasReferences } from "./gali.mjs";
-import { computeFreeSlots } from "./freebusy.mjs";
-import { fetchWeek, pruneCache } from "./cache.mjs";
+import { GaliError, hasReferences } from "./gali.mjs";
+import { clipToDay, computeFreeSlots } from "./freebusy.mjs";
+import { fetchWeek, mergeEventChunks, pruneCache } from "./cache.mjs";
 import { holidayDatesFrom } from "./classify.mjs";
 import {
     analyzeBlockers,
@@ -18,6 +18,7 @@ import {
     weekChunks,
 } from "./analysis.mjs";
 import { loadSettings, saveSettings, sanitizeSettings, normalizeProfile } from "./store.mjs";
+import { presetStore } from "./presets.mjs";
 
 const PALETTE = [
     "#3f7ee8",
@@ -52,9 +53,36 @@ const SCAN_INPUTS = [
     "treatAwayAsBusy",
 ];
 
+function calendarInputs(calendars) {
+    return calendars
+        .map(({ id, label }) => [id, label])
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+function scanInputs(settings) {
+    return SCAN_INPUTS.map((key) => key === "calendars" ? calendarInputs(settings.calendars) : settings[key]);
+}
+
 function scanInputsChanged(before, after) {
     if (!before) return false;
-    return SCAN_INPUTS.some((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+    return JSON.stringify(scanInputs(before)) !== JSON.stringify(scanInputs(after));
+}
+
+function calendarsInSettingsOrder(calendars, settings) {
+    const byId = new Map(calendars.map((calendar) => [calendar.id, calendar]));
+    if (byId.size !== settings.calendars.length) throw new Error("カレンダーの並び順を更新できませんでした。");
+    return settings.calendars.map(({ id }) => {
+        const calendar = byId.get(id);
+        if (!calendar) throw new Error("カレンダーの並び順を更新できませんでした。");
+        return calendar;
+    });
+}
+
+export class CalendarOrderError extends Error {
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+    }
 }
 
 export function pad2(value) {
@@ -62,7 +90,7 @@ export function pad2(value) {
 }
 
 export function toISODate(date) {
-    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
+    return `${String(date.getFullYear()).padStart(4, "0")}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())}`;
 }
 
 export function todayISO() {
@@ -82,23 +110,36 @@ export function addDays(iso, amount) {
 
 function startOfWeek(iso) {
     const date = parseISODate(iso);
-    // Monday-first week.
+    // Cache chunks are Monday-first, independent of the displayed range.
     const offset = (date.getDay() + 6) % 7;
     date.setDate(date.getDate() - offset);
     return toISODate(date);
 }
 
+function weeksForRange(range) {
+    const weeks = [];
+    for (let since = startOfWeek(range.since); since <= range.until; since = addDays(since, 7)) {
+        weeks.push({ since, until: addDays(since, 6) });
+    }
+    return weeks;
+}
+
+function eventInRange(event, range) {
+    if (event.allDay) {
+        return range.days.some((day) => day >= event.start && (event.end ? day < event.end : day === event.start));
+    }
+    return range.days.some((day) => clipToDay(event, day) !== null);
+}
+
 export function resolveRange(settings) {
     const anchor = settings.anchor || todayISO();
-    let first = anchor;
     let length = 1;
     if (settings.view === "week") {
-        first = startOfWeek(anchor);
         length = 7;
     } else if (settings.view === "3days") {
         length = 3;
     }
-    const days = Array.from({ length }, (_, index) => addDays(first, index));
+    const days = Array.from({ length }, (_, index) => addDays(anchor, index));
     return { since: days[0], until: days[days.length - 1], days, anchor };
 }
 
@@ -123,13 +164,16 @@ async function mapWithConcurrency(items, limit, worker) {
     return results;
 }
 
-class ProfileState {
-    constructor(profile) {
+export class ProfileState {
+    constructor(profile, { fetchCalendarWeek = fetchWeek, prune = pruneCache } = {}) {
         this.profile = profile;
+        this.fetchCalendarWeek = fetchCalendarWeek;
+        this.pruneCache = prune;
         this.settings = null;
         this.snapshot = null;
         this.error = null;
         this.loading = false;
+        this.revision = 0;
         this.listeners = new Set();
         this.inFlight = null;
         this.log = null;
@@ -138,13 +182,17 @@ class ProfileState {
         this.scanProgress = null;
         this.scanInFlight = null;
         this.scanInFlightKey = null;
+        this.scanInFlightGeneration = null;
+        this.scanGeneration = 0;
         this.scanCalendars = null;
-        this.inFlightKey = null;
+        this.fetchGeneration = 0;
+        this.fetchRequestId = 0;
+        this.latestFetchRequest = null;
         // Queue tails, kept apart from the active run above.
         this.queuedFetch = null;
-        this.queuedFetchKey = null;
         this.queuedScan = null;
         this.queuedScanKey = null;
+        this.queuedScanGeneration = null;
         // Serializes read/merge/save so two panels (or two quick edits) cannot
         // both merge onto the same stale settings and lose one of the patches.
         this.settingsLock = Promise.resolve();
@@ -167,6 +215,7 @@ class ProfileState {
     }
 
     publish() {
+        this.revision += 1;
         const payload = this.toJSON();
         for (const listener of this.listeners) {
             try {
@@ -180,7 +229,10 @@ class ProfileState {
     toJSON() {
         return {
             profile: this.profile,
+            revision: this.revision,
             settings: this.settings,
+            presets: presetStore.snapshot(),
+            presetError: presetStore.error,
             snapshot: this.snapshot,
             // Recomputed on every publish so working-hour changes apply
             // without re-hitting the API.
@@ -203,9 +255,29 @@ class ProfileState {
     async updateSettings(patch, { refresh = true } = {}) {
         await this.#locked(async () => {
             const before = this.settings;
+            const previousFetchKey = this.#fetchKey();
             const resolved = typeof patch === "function" ? patch(this.settings) : patch;
             const next = sanitizeSettings({ ...this.settings, ...resolved });
             this.settings = await saveSettings(this.profile, next);
+            if (previousFetchKey !== this.#fetchKey()) {
+                this.fetchGeneration += 1;
+                this.snapshot = null;
+                this.error = null;
+                this.loading = false;
+            } else {
+                if (this.snapshot) {
+                    this.snapshot = {
+                        ...this.snapshot,
+                        calendars: calendarsInSettingsOrder(this.snapshot.calendars, this.settings),
+                    };
+                }
+                if (this.scan?.calendars && !scanInputsChanged(before, this.settings)) {
+                    this.scan = {
+                        ...this.scan,
+                        calendars: calendarsInSettingsOrder(this.scan.calendars, this.settings),
+                    };
+                }
+            }
             // Anything the scan was computed from changed, so the stored scan
             // (and the what-if index built with it) no longer describes these
             // settings. Range navigation is display-only and does not count.
@@ -216,8 +288,67 @@ class ProfileState {
         return this.settings;
     }
 
+    async moveCalendar(input) {
+        const { id, direction, targetId, position } = input || {};
+        const directional = ["left", "right"].includes(direction) && targetId === undefined && position === undefined;
+        const relative = direction === undefined && typeof targetId === "string" && targetId.trim()
+            && ["before", "after"].includes(position);
+        if (typeof id !== "string" || !id.trim() || (!directional && !relative)) {
+            throw new CalendarOrderError("invalid_calendar_move", "移動するカレンダーと移動先を指定してください。");
+        }
+        return this.updateSettings((settings) => {
+            const calendars = [...settings.calendars];
+            const from = calendars.findIndex((entry) => entry.id === id);
+            if (from < 0) {
+                throw new CalendarOrderError("calendar_not_found", "移動するカレンダーが見つかりません。");
+            }
+            if (directional) {
+                const to = from + (direction === "left" ? -1 : 1);
+                if (to < 0 || to >= calendars.length) return {};
+                [calendars[from], calendars[to]] = [calendars[to], calendars[from]];
+            } else {
+                if (!calendars.some((entry) => entry.id === targetId)) {
+                    throw new CalendarOrderError("calendar_not_found", "移動先のカレンダーが見つかりません。");
+                }
+                if (id === targetId) return {};
+                const [moving] = calendars.splice(from, 1);
+                const target = calendars.findIndex((entry) => entry.id === targetId);
+                calendars.splice(target + (position === "after" ? 1 : 0), 0, moving);
+            }
+            return { calendars };
+        }, { refresh: false });
+    }
+
+    async createMemberPreset(name) {
+        return this.#locked(() => presetStore.create(name, this.settings.calendars));
+    }
+
+    async updateMemberPreset(id) {
+        return this.#locked(() => presetStore.update(id, this.settings.calendars));
+    }
+
+    async applyMemberPreset(id, { waitForRefresh = true } = {}) {
+        const preset = await presetStore.get(id);
+        await this.updateSettings({ calendars: preset.calendars }, { refresh: false });
+        const generation = this.fetchGeneration;
+        const refresh = this.refresh();
+        if (waitForRefresh) {
+            await refresh;
+        } else {
+            refresh.catch((error) => {
+                if (generation === this.fetchGeneration) {
+                    this.error = `プリセット適用後の予定取得に失敗しました: ${error.message || error}`;
+                    this.publish();
+                }
+            });
+        }
+        return preset;
+    }
+
     invalidateScan() {
+        this.scanGeneration += 1;
         this.scan = null;
+        this.scanProgress = null;
         this.scanIndex = null;
         this.scanDays = null;
         this.scanHolidays = null;
@@ -232,109 +363,177 @@ class ProfileState {
         return JSON.stringify([
             range.since,
             range.until,
-            settings.calendars.map((entry) => entry.id),
+            calendarInputs(settings.calendars),
             settings.refs,
             settings.refMyCals,
             settings.building,
         ]);
     }
 
-    async refresh({ force = false } = {}) {
+    refresh({ force = false } = {}) {
         const key = this.#fetchKey();
-        if (this.inFlight && !force && this.inFlightKey === key) return this.inFlight;
-        // The tail is tracked separately from the active fetch: chaining onto
-        // `inFlight` would lose an already queued request the moment the next
-        // one starts, and two of them would then run (and publish) at once.
-        if (this.queuedFetch && !force && this.queuedFetchKey === key) return this.queuedFetch;
-        const tail = this.queuedFetch || this.inFlight;
-        if (tail) {
-            // Never run two fetches at once: the slower one would publish over
-            // the newer result. Queue instead, so the latest settings win.
-            const queued = tail.catch(() => {}).then(() => this.#startFetch());
-            this.queuedFetch = queued;
-            this.queuedFetchKey = key;
-            queued.catch(() => {}).then(() => {
-                if (this.queuedFetch === queued) {
-                    this.queuedFetch = null;
-                    this.queuedFetchKey = null;
-                }
-            });
-            return queued;
-        }
-        return this.#startFetch();
+        const generation = this.fetchGeneration;
+        const latest = this.latestFetchRequest;
+        if (!force && latest && latest.key === key && latest.generation === generation) return latest.promise;
+        const request = {
+            id: ++this.fetchRequestId,
+            key,
+            generation,
+            settings: this.settings,
+            range: resolveRange(this.settings),
+            force,
+        };
+        request.promise = this.#refreshRequest(request);
+        this.latestFetchRequest = request;
+        request.promise.then(
+            () => { if (this.latestFetchRequest === request) this.latestFetchRequest = null; },
+            () => { if (this.latestFetchRequest === request) this.latestFetchRequest = null; },
+        );
+        return request.promise;
     }
 
-    #startFetch() {
-        const started = this.#fetch().finally(() => {
+    #isCurrentFetch(request) {
+        return request.id === this.fetchRequestId && request.generation === this.fetchGeneration;
+    }
+
+    async #refreshRequest(request) {
+        if (!request.force) {
+            const cached = await this.#buildSnapshot(request, { cacheOnly: true });
+            if (!this.#isCurrentFetch(request)) return null;
+            if (cached) {
+                this.snapshot = {
+                    ...cached,
+                    calendars: calendarsInSettingsOrder(cached.calendars, this.settings),
+                };
+                this.error = null;
+                this.loading = false;
+                this.publish();
+                return this.snapshot;
+            }
+        }
+        if (!this.#isCurrentFetch(request)) return null;
+        const tail = this.queuedFetch || this.inFlight;
+        if (tail) {
+            this.loading = true;
+            this.error = null;
+            this.publish();
+            const queued = tail.catch(() => {}).then(() => (
+                this.#isCurrentFetch(request) ? this.#startFetch(request) : null
+            ));
+            this.queuedFetch = queued;
+            queued.then(
+                () => { if (this.queuedFetch === queued) this.queuedFetch = null; },
+                () => { if (this.queuedFetch === queued) this.queuedFetch = null; },
+            );
+            return queued;
+        }
+        return this.#startFetch(request);
+    }
+
+    #startFetch(request) {
+        const started = this.#fetch(request).finally(() => {
             if (this.inFlight === started) {
                 this.inFlight = null;
-                this.inFlightKey = null;
             }
         });
         this.inFlight = started;
-        this.inFlightKey = this.#fetchKey();
         return started;
     }
 
-    async #fetch() {
-        this.loading = true;
-        this.error = null;
-        this.publish();
-        try {
-            const settings = this.settings;
-            const range = resolveRange(settings);
-            const options = {
-                since: range.since,
-                until: range.until,
-                refs: settings.refs,
-                refMyCals: settings.refMyCals,
-                building: settings.building,
+    async #buildSnapshot(request, { cacheOnly = false } = {}) {
+        const { settings, range } = request;
+        const options = { refs: settings.refs, refMyCals: settings.refMyCals, building: settings.building };
+        const weeks = weeksForRange(range);
+        const calendars = await mapWithConcurrency(settings.calendars, FETCH_CONCURRENCY, async (entry, index) => {
+            const base = {
+                id: entry.id,
+                label: entry.label || entry.id,
+                color: PALETTE[index % PALETTE.length],
             };
-
-            const calendars = await mapWithConcurrency(settings.calendars, FETCH_CONCURRENCY, async (entry, index) => {
-                const base = {
-                    id: entry.id,
-                    label: entry.label || entry.id,
-                    color: PALETTE[index % PALETTE.length],
-                };
-                try {
-                    const result = await collectCalendar(entry.id, options);
-                    const hidden = result.events.filter((event) => !event.detailsVisible).length;
-                    const declined = result.events.filter((event) => event.responseStatus === "declined").length;
-                    return {
-                        ...base,
-                        label: entry.label || result.summary || entry.id,
-                        summary: result.summary,
-                        timeZone: result.timeZone,
-                        accessRole: result.accessRole,
-                        events: result.events,
-                        error: null,
-                        stats: { total: result.events.length, hidden, declined },
-                    };
-                } catch (error) {
-                    return {
-                        ...base,
-                        summary: entry.id,
-                        timeZone: "",
-                        accessRole: "",
-                        events: [],
-                        error: error instanceof GaliError ? error.message : String(error && error.message),
-                        stats: { total: 0, hidden: 0, declined: 0 },
-                    };
+            try {
+                const chunks = [];
+                for (const week of weeks) {
+                    const result = await this.fetchCalendarWeek(entry.id, week.since, week.until, options, {
+                        cacheOnly,
+                        force: request.force && !cacheOnly,
+                    });
+                    if (!result) return null;
+                    chunks.push(result);
                 }
-            });
+                const newest = chunks.reduce((a, b) => a.fetchedAt >= b.fetchedAt ? a : b);
+                const events = mergeEventChunks(chunks.map((chunk) => ({
+                    events: chunk.events,
+                    at: Date.parse(chunk.fetchedAt),
+                }))).filter((event) => eventInRange(event, range));
+                const hidden = events.filter((event) => !event.detailsVisible).length;
+                const declined = events.filter((event) => event.responseStatus === "declined").length;
+                return {
+                    ...base,
+                    label: entry.label || newest.summary || entry.id,
+                    summary: newest.summary,
+                    timeZone: newest.timeZone,
+                    accessRole: newest.accessRole,
+                    events,
+                    error: null,
+                    fetchedAt: chunks.map((chunk) => chunk.fetchedAt).sort()[0],
+                    cacheHits: chunks.filter((chunk) => chunk.cached).length,
+                    cacheChunks: chunks.length,
+                    stats: { total: events.length, hidden, declined },
+                };
+            } catch (error) {
+                // A failed cache-only probe falls back to the normal fetch,
+                // which reports the underlying failure on the calendar.
+                if (cacheOnly) return null;
+                return {
+                    ...base,
+                    summary: entry.id,
+                    timeZone: "",
+                    accessRole: "",
+                    events: [],
+                    error: error instanceof GaliError ? error.message : String(error?.message || error),
+                    stats: { total: 0, hidden: 0, declined: 0 },
+                };
+            }
+        });
+        if (cacheOnly && calendars.some((calendar) => !calendar)) return null;
+        const successful = calendars.filter((calendar) => !calendar.error);
+        const times = successful.map((calendar) => calendar.fetchedAt).sort();
+        return {
+            fetchedAt: times[0] || new Date().toISOString(),
+            range,
+            usingReferences: hasReferences(options),
+            cache: {
+                hits: successful.reduce((total, calendar) => total + calendar.cacheHits, 0),
+                chunks: successful.reduce((total, calendar) => total + calendar.cacheChunks, 0),
+            },
+            calendars,
+        };
+    }
 
-            this.snapshot = {
-                fetchedAt: new Date().toISOString(),
-                range,
-                usingReferences: hasReferences(options),
-                calendars,
-            };
-        } catch (error) {
-            this.error = error instanceof GaliError ? error.message : String(error && error.message);
-        } finally {
-            this.loading = false;
+    async #fetch(request) {
+        if (this.#isCurrentFetch(request)) {
+            this.loading = true;
+            this.error = null;
             this.publish();
+        }
+        try {
+            const snapshot = await this.#buildSnapshot(request);
+            if (this.#isCurrentFetch(request)) {
+                this.snapshot = {
+                    ...snapshot,
+                    calendars: calendarsInSettingsOrder(snapshot.calendars, this.settings),
+                };
+                this.pruneCache().catch(() => {});
+            }
+        } catch (error) {
+            if (this.#isCurrentFetch(request)) {
+                this.error = error instanceof GaliError ? error.message : String(error?.message || error);
+            }
+        } finally {
+            if (this.#isCurrentFetch(request)) {
+                this.loading = false;
+                this.publish();
+            }
         }
     }
 
@@ -347,25 +546,34 @@ class ProfileState {
      */
     async scanAvailability(params = {}, { force = false } = {}) {
         const key = this.#scanKey(params);
+        const generation = this.scanGeneration;
         // Only share a running scan with a request that would compute exactly
         // the same thing: a 60-minute find_slots must not be handed the results
         // of a 30-minute scan that happened to be in flight.
-        if (this.scanInFlight && !force && this.scanInFlightKey === key) return this.scanInFlight;
+        if (this.scanInFlight && !force && this.scanInFlightKey === key && this.scanInFlightGeneration === generation) {
+            return this.scanInFlight;
+        }
         // As with `refresh`, the queue tail is tracked apart from the running
         // scan, and its own key travels with it: a queued 60-minute scan must
         // not be handed back to a later 30-minute request.
-        if (this.queuedScan && !force && this.queuedScanKey === key) return this.queuedScan;
+        if (this.queuedScan && !force && this.queuedScanKey === key && this.queuedScanGeneration === generation) {
+            return this.queuedScan;
+        }
         const tail = this.queuedScan || this.scanInFlight;
         if (tail) {
             // `force` means "ignore the fetch cache", not "run a second scan on
             // top of the first": both would write the same progress/result.
-            const queued = tail.catch(() => {}).then(() => this.#startScan(params, { force }));
+            const queued = tail.catch(() => {}).then(() => (
+                generation === this.scanGeneration ? this.#startScan(params, { force }) : null
+            ));
             this.queuedScan = queued;
             this.queuedScanKey = key;
+            this.queuedScanGeneration = generation;
             queued.catch(() => {}).then(() => {
                 if (this.queuedScan === queued) {
                     this.queuedScan = null;
                     this.queuedScanKey = null;
+                    this.queuedScanGeneration = null;
                 }
             });
             return queued;
@@ -381,23 +589,26 @@ class ProfileState {
             params.durationMinutes || settings.slotMinutes,
             params.weeks || settings.scanWeeks,
             params.from || todayISO(),
-            SCAN_INPUTS.map((name) => settings[name]),
+            scanInputs(settings),
         ]);
     }
 
     #startScan(params, { force }) {
-        const started = this.#runScan(params, { force }).finally(() => {
+        const generation = this.scanGeneration;
+        const started = this.#runScan(params, { force }, generation).finally(() => {
             if (this.scanInFlight === started) {
                 this.scanInFlight = null;
                 this.scanInFlightKey = null;
+                this.scanInFlightGeneration = null;
             }
         });
         this.scanInFlight = started;
         this.scanInFlightKey = this.#scanKey(params);
+        this.scanInFlightGeneration = generation;
         return started;
     }
 
-    async #runScan(params, { force }) {
+    async #runScan(params, { force }, generation) {
         const settings = this.settings;
         const durationMinutes = params.durationMinutes || settings.slotMinutes;
         const weeks = params.weeks || settings.scanWeeks;
@@ -406,10 +617,12 @@ class ProfileState {
         // The settings this run is derived from. If they change while the weeks
         // are being fetched the result describes a different question (a
         // participant added mid-scan was never checked), so it is thrown away.
-        const inputs = JSON.stringify(SCAN_INPUTS.map((name) => settings[name]));
-        const stale = () => inputs !== JSON.stringify(SCAN_INPUTS.map((name) => this.settings[name]));
+        const inputs = JSON.stringify(scanInputs(settings));
+        const stale = () =>
+            generation !== this.scanGeneration || inputs !== JSON.stringify(scanInputs(this.settings));
 
-        this.scanProgress = { done: 0, total: 0, phase: "starting", cached: 0 };
+        const progress = { done: 0, total: 0, phase: "starting", cached: 0 };
+        this.scanProgress = progress;
         this.publish();
 
         try {
@@ -423,31 +636,31 @@ class ProfileState {
                     targets.push({ entry: { id: settings.holidayCalendarId, label: "祝日" }, chunk, holiday: true });
                 }
             }
-            this.scanProgress = { done: 0, total: targets.length, phase: "fetching", cached: 0 };
+            progress.total = targets.length;
+            progress.phase = "fetching";
             this.publish();
 
             const options = { refs: settings.refs, refMyCals: settings.refMyCals, building: settings.building };
             const eventsByCalendar = new Map();
             const errors = new Map();
-            const holidayEvents = [];
+            const holidayChunks = [];
 
             await mapWithConcurrency(targets, FETCH_CONCURRENCY, async (target) => {
                 try {
-                    const result = await fetchWeek(
+                    const result = await this.fetchCalendarWeek(
                         target.entry.id,
                         target.chunk.since,
                         target.chunk.until,
                         target.holiday ? {} : options,
                         { force },
                     );
-                    if (target.holiday) holidayEvents.push(...result.events);
+                    const chunk = { events: result.events, at: Date.parse(result.fetchedAt) };
+                    if (target.holiday) holidayChunks.push(chunk);
                     else {
-                        if (!eventsByCalendar.has(target.entry.id)) eventsByCalendar.set(target.entry.id, new Map());
-                        const bucket = eventsByCalendar.get(target.entry.id);
-                        // Week chunks overlap at boundaries for multi-day events.
-                        for (const event of result.events) bucket.set(`${event.id}\u0000${event.start}`, event);
+                        if (!eventsByCalendar.has(target.entry.id)) eventsByCalendar.set(target.entry.id, []);
+                        eventsByCalendar.get(target.entry.id).push(chunk);
                     }
-                    if (result.cached) this.scanProgress.cached += 1;
+                    if (result.cached) progress.cached += 1;
                 } catch (error) {
                     const message = error instanceof GaliError ? error.message : String(error && error.message);
                     // Even one missing week makes "everyone is free then" a
@@ -457,8 +670,8 @@ class ProfileState {
                         `${target.chunk.since}〜${target.chunk.until}: ${message}`,
                     );
                 } finally {
-                    this.scanProgress.done += 1;
-                    this.publish();
+                    progress.done += 1;
+                    if (!stale()) this.publish();
                 }
             });
 
@@ -470,13 +683,9 @@ class ProfileState {
                 );
             }
 
-            if (stale()) {
-                throw new GaliError(
-                    "スキャン中に対象カレンダーや条件が変更されたため、この結果は破棄しました。もう一度実行してください。",
-                );
-            }
+            if (stale()) return null;
 
-            this.scanProgress.phase = "analyzing";
+            progress.phase = "analyzing";
             this.publish();
 
             const calendars = settings.calendars.map((entry, index) => ({
@@ -484,11 +693,11 @@ class ProfileState {
                 label: entry.label || entry.id,
                 color: PALETTE[index % PALETTE.length],
                 error: null,
-                events: [...(eventsByCalendar.get(entry.id) || new Map()).values()],
+                events: mergeEventChunks(eventsByCalendar.get(entry.id) || []),
             }));
             this.scanCalendars = calendars;
 
-            const holidays = holidayDatesFrom(holidayEvents);
+            const holidays = holidayDatesFrom(mergeEventChunks(holidayChunks));
             const days = enumerateDays(from, until, { weekdaysOnly: settings.scanWeekdaysOnly });
             const analysisSettings = {
                 ...settings,
@@ -517,7 +726,7 @@ class ProfileState {
                 weeks,
                 durationMinutes,
                 weekdaysOnly: settings.scanWeekdaysOnly,
-                calendars: calendars.map((calendar) => ({
+                calendars: calendarsInSettingsOrder(calendars, this.settings).map((calendar) => ({
                     id: calendar.id,
                     label: calendar.label,
                     error: calendar.error,
@@ -542,12 +751,14 @@ class ProfileState {
                     keys: group.keys,
                 })),
             };
-            pruneCache().catch(() => {});
+            this.pruneCache().catch(() => {});
         } catch (error) {
-            this.invalidateScan();
-            this.error = error instanceof GaliError ? error.message : String(error && error.message);
+            if (!stale()) {
+                this.invalidateScan();
+                this.error = error instanceof GaliError ? error.message : String(error && error.message);
+            }
         } finally {
-            this.scanProgress = null;
+            if (this.scanProgress === progress) this.scanProgress = null;
             this.publish();
         }
         return this.scan;
@@ -566,7 +777,14 @@ class ProfileState {
 
 const profiles = new Map();
 
+presetStore.subscribe(() => {
+    for (const state of profiles.values()) {
+        if (state.settings) state.publish();
+    }
+});
+
 export async function getProfileState(profileName, overrides) {
+    await presetStore.initialize();
     const profile = normalizeProfile(profileName);
     let state = profiles.get(profile);
     if (!state) {
