@@ -57,6 +57,14 @@ const localDate = (date) => `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-
 const hhmm = (minutes) => `${pad2(Math.floor(minutes / 60) % 24)}:${pad2(Math.round(minutes) % 60)}`;
 const dayStartOf = (iso) => new Date(`${iso}T00:00:00`);
 
+function timedEventTime(minutes) {
+    const total = Math.round(minutes * 60);
+    const hours = Math.floor(total / 3600) % 24;
+    const minute = Math.floor((total % 3600) / 60);
+    const second = total % 60;
+    return `${pad2(hours)}:${pad2(minute)}${second ? `:${pad2(second)}` : ""}`;
+}
+
 function formatDayLabel(iso) {
     const date = dayStartOf(iso);
     return `${date.getMonth() + 1}/${date.getDate()} (${WEEKDAYS[date.getDay()]})`;
@@ -321,6 +329,8 @@ async function postPreset(path, body) {
 
 /* ---------------- event placement ---------------- */
 
+const MIN_VISIBLE_TIMED_HEIGHT = 2;
+
 /** Clip one event to a single day column, returning wall-clock minutes. */
 function clipToDay(event, iso) {
     const [year, month, day] = iso.split("-").map(Number);
@@ -368,19 +378,22 @@ function assignLanes(items) {
     };
 
     for (const item of sorted) {
-        if (cluster.length && item.startMin >= clusterEnd) flush();
-        let lane = laneEnds.findIndex((end) => end <= item.startMin);
+        const start = timedEventStart(item);
+        const end = Math.max(item.endMin, start + (MIN_VISIBLE_TIMED_HEIGHT / HOUR_HEIGHT) * 60);
+        if (cluster.length && start >= clusterEnd) flush();
+        let lane = laneEnds.findIndex((laneEnd) => laneEnd <= start);
         if (lane === -1) {
             lane = laneEnds.length;
             laneEnds.push(0);
         }
-        laneEnds[lane] = item.endMin;
+        laneEnds[lane] = end;
         item.lane = lane;
         item.laneCount = 1;
         cluster.push(item);
-        clusterEnd = Math.max(clusterEnd, item.endMin);
+        clusterEnd = Math.max(clusterEnd, end);
     }
     if (cluster.length) flush();
+    fitTimedEventHeights(sorted);
     return sorted;
 }
 
@@ -388,8 +401,44 @@ function visibleEvents(calendar, settings) {
     return calendar.events.filter((event) => settings.showDeclined || event.responseStatus !== "declined");
 }
 
-function timedEventHeight(placed) {
+function timedEventStart(placed) {
+    return Math.min(placed.startMin, 1440 - (MIN_VISIBLE_TIMED_HEIGHT / HOUR_HEIGHT) * 60);
+}
+
+function defaultTimedEventHeight(placed) {
     return Math.max(14, ((placed.endMin - placed.startMin) / 60) * HOUR_HEIGHT - 2);
+}
+
+function timedEventHeight(placed) {
+    return placed.displayHeight ?? defaultTimedEventHeight(placed);
+}
+
+function horizontallyOverlaps(left, right) {
+    return left.lane / left.laneCount < (right.lane + 1) / right.laneCount
+        && right.lane / right.laneCount < (left.lane + 1) / left.laneCount;
+}
+
+function fitTimedEventHeights(items) {
+    for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        const top = (timedEventStart(item) / 60) * HOUR_HEIGHT;
+        let height = Math.min(
+            defaultTimedEventHeight(item),
+            24 * HOUR_HEIGHT - top,
+        );
+        for (let nextIndex = index + 1; nextIndex < items.length; nextIndex += 1) {
+            const next = items[nextIndex];
+            const nextTop = (timedEventStart(next) / 60) * HOUR_HEIGHT;
+            if (nextTop >= top + height) break;
+            if (next.startMin >= item.endMin && horizontallyOverlaps(item, next)) {
+                const available = nextTop - top;
+                // Leave room for subpixel rounding without making the block invisible.
+                height = available - Math.min(0.1, Math.max(0, (available - MIN_VISIBLE_TIMED_HEIGHT) / 2));
+                break;
+            }
+        }
+        item.displayHeight = height;
+    }
 }
 
 function effectiveEventEnd(event) {
@@ -409,20 +458,17 @@ function connectableTimed(items) {
     const overlapping = new Set();
     let active = [];
     for (const item of items) {
-        const top = (item.startMin / 60) * HOUR_HEIGHT;
+        const top = (timedEventStart(item) / 60) * HOUR_HEIGHT;
         const bottom = top + timedEventHeight(item);
-        // Minimum-height blocks can overlap lanes from a cluster with different widths.
         // Ignore floating-point noise where block edges just touch.
         active = active.filter((other) => other.bottom > top + 1e-7);
-        const left = item.lane / item.laneCount;
-        const right = (item.lane + 1) / item.laneCount;
         for (const other of active) {
-            if (left < other.right && other.left < right) {
+            if (horizontallyOverlaps(item, other.item)) {
                 overlapping.add(item);
                 overlapping.add(other.item);
             }
         }
-        active.push({ item, bottom, left, right });
+        active.push({ item, bottom });
     }
     const edges = { left: new Set(), right: new Set() };
     for (const item of items) {
@@ -433,9 +479,36 @@ function connectableTimed(items) {
     return edges;
 }
 
+function matchJoinedTimedHeights(pairs) {
+    const links = new Map();
+    for (const [left, right] of pairs) {
+        if (!links.has(left)) links.set(left, []);
+        if (!links.has(right)) links.set(right, []);
+        links.get(left).push(right);
+        links.get(right).push(left);
+    }
+    const visited = new Set();
+    for (const root of links.keys()) {
+        if (visited.has(root)) continue;
+        const stack = [root];
+        const connected = [];
+        let height = Infinity;
+        while (stack.length) {
+            const item = stack.pop();
+            if (visited.has(item)) continue;
+            visited.add(item);
+            connected.push(item);
+            height = Math.min(height, timedEventHeight(item));
+            stack.push(...links.get(item));
+        }
+        for (const item of connected) item.displayHeight = height;
+    }
+}
+
 function connectAdjacentEvents(columns) {
     const sharedGroup = (column, event) => state.sharedEvents.get(calendarEventKey(column.calendar.id, event.id));
     const timedEdges = columns.map((column) => connectableTimed(column.placed));
+    const timedPairs = [];
     const sameEnd = (left, right) => {
         const end = effectiveEventEnd(left);
         return end !== null && end === effectiveEventEnd(right);
@@ -459,6 +532,7 @@ function connectAdjacentEvents(columns) {
                 || !sameEnd(item.event, peer.event)) return;
             item.joinRight = true;
             peer.joinLeft = true;
+            timedPairs.push([item, peer]);
         });
 
         for (let row = 0; row < Math.min(left.allDay.length, right.allDay.length); row += 1) {
@@ -471,6 +545,7 @@ function connectAdjacentEvents(columns) {
             }
         }
     }
+    matchJoinedTimedHeights(timedPairs);
 }
 
 /* ---------------- rendering ---------------- */
@@ -512,7 +587,7 @@ function sharingEventTooltip(time, group, event) {
 
 function renderEventBlock(placed, calendar, geometry, settings) {
     const { event, startMin, endMin, lane, laneCount } = placed;
-    const top = ((startMin - geometry.startMinute) / 60) * HOUR_HEIGHT;
+    const top = ((timedEventStart(placed) - geometry.startMinute) / 60) * HOUR_HEIGHT;
     const height = timedEventHeight(placed);
     const classes = ["ev"];
     const sharing = sharingMode(settings);
@@ -528,24 +603,28 @@ function renderEventBlock(placed, calendar, geometry, settings) {
     const shared = state.sharedEvents.get(calendarEventKey(calendar.id, event.id));
     const color = eventColor(calendar, shared, sharing);
     if (shared && height < 18) classes.push("compact");
+    if (height < 14) classes.push("short");
     if (placed.joinLeft) classes.push("join-left");
     if (placed.joinRight) classes.push("join-right");
     const left = `${(lane / laneCount) * 100}%`;
-    const width = `${100 / laneCount}%`;
+    const laneWidth = 100 / laneCount;
+    const width = `${laneWidth}%`;
     const extraWidth = Number(Boolean(placed.joinLeft)) + Number(Boolean(placed.joinRight));
     const positionedLeft = placed.joinLeft ? `calc(${left} - 1px)` : left;
     const positionedWidth = extraWidth ? `calc(${width} + ${extraWidth}px)` : width;
-    const timeText = `${placed.continuesBefore ? "…" : ""}${hhmm(startMin)}${placed.continuesAfter ? "…" : ""}`;
-    const timeRange = `${hhmm(startMin)}–${hhmm(endMin)}`;
+    const startText = timedEventTime(startMin);
+    const endText = timedEventTime(endMin);
+    const timeText = `${placed.continuesBefore ? "…" : ""}${startText}${placed.continuesAfter ? "…" : ""}`;
+    const timeRange = `${startText}–${endText}`;
     const tooltip = sharing
         ? sharingEventTooltip(timeRange, shared, event)
-        : `${hhmm(startMin)}-${hhmm(endMin)} ${title}${event.completed ? `\n${completionLabel(event)}` : ""}${shared ? `\n${sharedLabel(shared, calendar)}` : ""}`;
+        : `${startText}-${endText} ${title}${event.completed ? `\n${completionLabel(event)}` : ""}${shared ? `\n${sharedLabel(shared, calendar)}` : ""}`;
     const identity = sharing
         ? `data-share-time="${escapeHtml(timeRange)}" aria-label="${escapeHtml(tooltip)}"`
-        : `data-cal="${escapeHtml(calendar.id)}" data-ev="${escapeHtml(event.id)}"`;
+        : `data-cal="${escapeHtml(calendar.id)}" data-ev="${escapeHtml(event.id)}" aria-label="${escapeHtml(tooltip)}"`;
 
     return `<button type="button" class="${classes.join(" ")}"
-        style="top:${top}px;height:${height}px;left:${positionedLeft};width:${positionedWidth};--ev-color:${color};--ev-fill:${hexToRgba(color, 0.22)}"
+        style="top:${top}px;height:${height}px;left:${positionedLeft};width:${positionedWidth};--ev-lane:${laneWidth};--ev-color:${color};--ev-fill:${hexToRgba(color, 0.22)}"
         ${identity}
         ${shared ? `data-shared="${shared.number}"` : ""}
         title="${escapeHtml(tooltip)}"
@@ -1215,9 +1294,10 @@ function showPopover(target) {
         } else {
             const start = new Date(event.start);
             const end = new Date(event.end);
+            const time = (date) => timedEventTime(date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60);
             push(
                 "日時",
-                `${localDate(start)} ${pad2(start.getHours())}:${pad2(start.getMinutes())} – ${pad2(end.getHours())}:${pad2(end.getMinutes())}`,
+                `${localDate(start)} ${time(start)} – ${time(end)}`,
             );
         }
         push("カレンダー", calendar.label);

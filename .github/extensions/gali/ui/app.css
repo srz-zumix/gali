@@ -1,6 +1,6 @@
 :root {
     --gali-gutter: 56px;
-    --gali-hour-height: 46px;
+    --gali-hour-height: 54px;
     --gali-border: var(--border-color-default, rgba(128, 128, 128, 0.3));
     --gali-muted: var(--text-color-muted, #6b7280);
 }
@@ -681,6 +681,7 @@ table.cal tbody > tr.allday-row > td {
 
 .col {
     position: relative;
+    container-type: inline-size;
     border-bottom: 1px solid var(--gali-border);
     /* Clip vertically while letting joined blocks cover the column separator. */
     overflow: visible;
@@ -725,6 +726,18 @@ table.cal tbody > tr.allday-row > td {
     width: 100%;
 }
 
+.col .ev {
+    --ev-lane-size: calc(var(--ev-lane, 100) * 1cqw);
+    border-inline-width: clamp(0px, calc(var(--ev-lane-size) - 2px), 1px);
+    padding-inline: clamp(0px, calc((var(--ev-lane-size) - 2px) / 2), 3px);
+}
+
+.ev.short {
+    padding-block: 0;
+    font-size: 9px;
+    line-height: 9px;
+}
+
 .ev.join-left {
     border-left: 0;
     border-top-left-radius: 0;
@@ -743,6 +756,20 @@ table.cal tbody > tr.allday-row > td {
     padding-inline: 8px;
 }
 
+.col .ev.sharing.join-left,
+.col .ev.sharing.join-right {
+    padding-inline: clamp(0px, calc((var(--ev-lane-size) - 2px) / 2), 8px);
+}
+
+@supports not (width: 1cqw) {
+    .col .ev,
+    .col .ev.sharing.join-left,
+    .col .ev.sharing.join-right {
+        border-inline-width: 0;
+        padding-inline: 0;
+    }
+}
+
 .ev.masked {
     background: var(--ev-hatch);
 }
@@ -752,9 +779,12 @@ table.cal tbody > tr.allday-row > td {
     border-style: dashed;
 }
 
+.ev.declined {
+    text-decoration: line-through;
+}
+
 .ev.declined:not(.sharing) {
     opacity: 0.55;
-    text-decoration: line-through;
 }
 
 .ev.sharing.declined {
@@ -820,6 +850,10 @@ table.cal tbody > tr.allday-row > td {
 .ev.compact .shared-badge {
     font-size: 8px;
     line-height: 8px;
+}
+
+.ev.short .shared-badge {
+    line-height: 7px;
 }
 
 .ev.peer-highlight {

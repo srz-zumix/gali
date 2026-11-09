@@ -98,6 +98,12 @@ function createRenderer({ now } = {}) {
             const connectable = context.connectableTimed(placements)[edge];
             return placements.map((placement) => connectable.has(placement));
         },
+        placeTimed(placements) {
+            return Array.from(context.assignLanes(placements.map((placement) => ({ ...placement }))));
+        },
+        timedHeight(placement) {
+            return context.timedEventHeight(placement);
+        },
         renderStatus(data) {
             context.renderStatus(data);
             return elements.get("status");
@@ -1012,6 +1018,12 @@ function assertJoins(blocks, expected) {
     ]), expected);
 }
 
+function timedBlockGeometry(block) {
+    const match = /style="top:([\d.]+)px;height:([\d.]+)px;/.exec(block.markup);
+    assert.ok(match, "expected a positioned timed event");
+    return { top: Number(match[1]), height: Number(match[2]) };
+}
+
 test("adjacent matching timed and all-day events connect only in sharing mode", () => {
     for (const allDay of [false, true]) {
         for (const sharing of [false, true]) {
@@ -1238,7 +1250,7 @@ test("visible declined timed copies can join at an exposed edge", () => {
     assert.equal(bob.events.length, 1);
 });
 
-test("visual blockers on the same timed edge are detected beyond the adjacent sorted event", () => {
+test("very short events use distinct lanes without covering other timed events", () => {
     const data = sharedData();
     data.settings.shareMode = true;
     const bob = data.snapshot.calendars[1];
@@ -1249,16 +1261,16 @@ test("visual blockers on the same timed edge are detected beyond the adjacent so
     let blocks = gridEventBlocks(renderer.render(data));
     let shared = blocks.filter((block) => block.shared);
     assertJoins(shared, [[false, false], [false, false]]);
-    assert.match(blocks[1].markup, /left:0%;width:50%/);
-    assert.match(blocks[2].markup, /left:50%;width:50%/);
-    assert.match(shared[1].markup, /left:0%;width:50%/);
+    assert.match(blocks[1].markup, /left:0%;width:33\.333333333333336%/);
+    assert.match(blocks[2].markup, /left:33\.33333333333333%;width:33\.333333333333336%/);
+    assert.match(shared[1].markup, /left:66\.66666666666666%;width:33\.333333333333336%/);
 
     before.end = "2026-10-12T17:59:30";
     interior.start = "2026-10-12T18:01:00";
     blocks = gridEventBlocks(renderer.render(data));
     shared = blocks.filter((block) => block.shared);
     assertJoins(shared, [[false, false], [false, false]]);
-    assert.match(blocks[1].markup, /left:0%;width:100%/);
+    assert.match(blocks[1].markup, /left:0%;width:33\.333333333333336%/);
 
     before.start = "2026-10-12T17:00:00";
     before.end = "2026-10-12T17:01:00";
@@ -1268,7 +1280,34 @@ test("visual blockers on the same timed edge are detected beyond the adjacent so
     assertJoins(blocks.filter((block) => !block.shared), [[false, false], [false, false]]);
 });
 
-test("a minimum-height block in a different cluster cannot be covered by a joined edge lane", () => {
+test("shared copies can join beside subpixel-width lanes on either side", () => {
+    const time = (second) => `14:${String(Math.floor(second / 60)).padStart(2, "0")}:${String(second % 60).padStart(2, "0")}`;
+    for (const denseSide of [0, 1]) {
+        const data = sharedData();
+        const calendars = data.snapshot.calendars;
+        const start = denseSide === 0 ? 130 : 0;
+        for (const calendar of calendars) {
+            Object.assign(calendar.events[0], {
+                start: `2026-10-12T${time(start)}`, end: `2026-10-12T${time(start + 1)}`,
+            });
+        }
+        for (let second = denseSide === 0 ? 0 : 1; second < (denseSide === 0 ? 130 : 131); second += 1) {
+            calendars[denseSide].events.push(otherTimedEvent(`neighbor-${second}`, time(second), time(second + 1)));
+        }
+        const renderer = createRenderer();
+        for (const sharing of [false, true]) {
+            data.settings.shareMode = sharing;
+            const blocks = gridEventBlocks(renderer.render(data));
+            const shared = blocks.filter((block) => block.shared);
+            assert.equal(blocks.length, 132);
+            assertJoins(shared, sharing ? [[false, true], [true, false]] : [[false, false], [false, false]]);
+            assert.ok(shared[denseSide].markup.includes(`--ev-lane:${100 / 131};`));
+            assertJoins(blocks.filter((block) => !block.shared), Array.from({ length: 130 }, () => [false, false]));
+        }
+    }
+});
+
+test("a short event in a different-width cluster is fitted before a joined edge lane", () => {
     const data = sharedData();
     data.settings.shareMode = true;
     const [alice, bob] = data.snapshot.calendars;
@@ -1287,10 +1326,11 @@ test("a minimum-height block in a different cluster cannot be covered by a joine
     const blocks = gridEventBlocks(createRenderer().render(data));
     const shared = blocks.filter((block) => block.shared);
     assert.equal(blocks.length, 7);
-    assert.match(shared[0].markup, /left:50%;width:50%/);
+    assert.match(shared[0].markup, /left:66\.66666666666666%;width:calc\(33\.333333333333336% \+ 1px\)/);
     const late = blocks.find((block) => block.markup.includes('data-share-time="09:59–10:00"'));
     assert.match(late.markup, /left:33\.33333333333333%;width:33\.333333333333336%/);
-    assertJoins(shared, [[false, false], [false, false]]);
+    assertJoins(shared, [[false, true], [true, false]]);
+    assert.equal(timedBlockGeometry(late).height, 14);
 });
 
 test("timed edge detection allows exact visual contact but rejects minimum-height overlaps", () => {
@@ -1309,7 +1349,7 @@ test("timed edge detection allows exact visual contact but rejects minimum-heigh
     assert.deepEqual(renderer.timedEdges(placements, "right"), [false, false, false]);
 });
 
-test("timed events with logical or minimum-height visual overlaps stay separate", () => {
+test("only logical overlaps prevent shared timed events from joining", () => {
     for (const conflictStart of ["18:02", "18:06", "17:59"]) {
         const data = joinedData();
         data.settings.shareMode = true;
@@ -1326,9 +1366,202 @@ test("timed events with logical or minimum-height visual overlaps stay separate"
         const blocks = gridEventBlocks(createRenderer().render(data));
         const shared = blocks.filter((block) => block.shared);
         assert.equal(blocks.length, 4);
-        assertJoins(shared, [[false, false], [false, true], [true, false]]);
+        assertJoins(shared, conflictStart === "18:02"
+            ? [[false, false], [false, true], [true, false]]
+            : [[false, true], [true, true], [true, false]]);
         assertJoins(blocks.filter((block) => !block.shared), [[false, false]]);
     }
+});
+
+test("a back-to-back short event does not overlap or prevent a shared frame joining", () => {
+    const data = sharedData();
+    const [alice, bob] = data.snapshot.calendars;
+    alice.events.unshift(otherTimedEvent("before", "17:45:00", "18:00:00"));
+    for (const calendar of [alice, bob]) calendar.events.find((event) => event.uid === "meeting@example.com").end = "2026-10-12T18:45:00";
+    const renderer = createRenderer();
+    for (const sharing of [false, true]) {
+        data.settings.shareMode = sharing;
+        const blocks = gridEventBlocks(renderer.render(data));
+        const before = blocks[0];
+        const shared = blocks.filter((block) => block.shared);
+        const beforeGeometry = timedBlockGeometry(before);
+        const sharedGeometry = timedBlockGeometry(shared[0]);
+        assert.ok(Math.abs(beforeGeometry.height - 13.4) < 1e-7);
+        assert.ok(before.classes.has("short"));
+        assert.ok(beforeGeometry.top + beforeGeometry.height <= sharedGeometry.top);
+        assert.equal(sharedGeometry.height, 38.5);
+        assertJoins(shared, sharing ? [[false, true], [true, false]] : [[false, false], [false, false]]);
+        assert.match(before.markup, sharing
+            ? /aria-label="17:45–18:00 予定あり"/
+            : /aria-label="17:45-18:00 Hidden before"/);
+    }
+});
+
+test("joined short copies share the smallest available height, without changing disconnected copies", () => {
+    for (const conflictIndex of [0, 2]) {
+        const data = joinedData();
+        const calendars = data.snapshot.calendars;
+        for (const calendar of calendars) calendar.events[0].end = "2026-10-12T18:15:00";
+        calendars[conflictIndex].events.push(otherTimedEvent("after", "18:15:00", "18:30:00"));
+        calendars.push({ id: "empty", label: "Empty", color: "#3f7ee8", events: [] });
+        calendars.push({
+            id: "dave", label: "Dave", color: "#3f7ee8",
+            events: [{ ...calendars[0].events.find((event) => event.uid === "meeting@example.com"), id: "meeting-dave" }],
+        });
+        const renderer = createRenderer();
+        data.settings.shareMode = true;
+        let shared = gridEventBlocks(renderer.render(data)).filter((block) => block.shared);
+        assertJoins(shared, [[false, true], [true, true], [true, false], [false, false]]);
+        const heights = shared.map((block) => timedBlockGeometry(block).height);
+        assert.ok(heights.slice(0, 3).every((height) => Math.abs(height - 13.4) < 1e-7));
+        assert.equal(heights[3], 14);
+        assert.ok(shared.slice(0, 3).every((block) => block.classes.has("short")));
+
+        data.settings.shareMode = false;
+        shared = gridEventBlocks(renderer.render(data)).filter((block) => block.shared);
+        assert.ok(shared.every((block, index) => Math.abs(timedBlockGeometry(block).height
+            - (index === conflictIndex ? 13.4 : 14)) < 1e-7));
+    }
+});
+
+test("disjoint timed events never share visible space across lane and cluster changes", () => {
+    const renderer = createRenderer();
+    const cases = [
+        [
+            { startMin: 540, endMin: 555 },
+            { startMin: 555, endMin: 600 },
+            { startMin: 555, endMin: 557 },
+            { startMin: 557, endMin: 558 },
+            { startMin: 558, endMin: 559 },
+            { startMin: 600, endMin: 601 },
+        ],
+        [
+            { startMin: 570, endMin: 600 },
+            { startMin: 570, endMin: 570 + 1 / 3 },
+            { startMin: 570, endMin: 570 + 1 / 3 },
+            { startMin: 599, endMin: 600 },
+            { startMin: 600, endMin: 660 },
+            { startMin: 600, endMin: 630 },
+            { startMin: 630, endMin: 630 + 1 / 60 },
+            { startMin: 630 + 1 / 60, endMin: 632 },
+        ],
+        [
+            { startMin: 1439, endMin: 1439 + 1 / 60 },
+            { startMin: 1439 + 1 / 60, endMin: 1440 },
+        ],
+    ];
+    let seed = 0x12345678;
+    const random = () => {
+        seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+        return seed;
+    };
+    for (let index = 0; index < 40; index += 1) {
+        cases.push(Array.from({ length: 20 }, () => {
+            const start = (index % 2 ? 85_800 : 43_200) + random() % 600;
+            const end = Math.min(86_400, start + 1 + random() % 1_200);
+            return { startMin: start / 60, endMin: end / 60 };
+        }));
+    }
+    for (const source of cases) {
+        for (const input of [source, [...source].reverse(), [...source.slice(1), source[0]]]) {
+            const items = renderer.placeTimed(input);
+            for (const item of items) {
+                const top = Math.min(item.startMin / 60 * layout.HOUR_HEIGHT, 24 * layout.HOUR_HEIGHT - 2);
+                assert.ok(renderer.timedHeight(item) >= 2 - 1e-7);
+                assert.ok(top + renderer.timedHeight(item) <= 24 * layout.HOUR_HEIGHT + 1e-7);
+                for (const next of items) {
+                    if (next.startMin < item.endMin) continue;
+                    const horizontalOverlap = item.lane / item.laneCount < (next.lane + 1) / next.laneCount
+                        && next.lane / next.laneCount < (item.lane + 1) / item.laneCount;
+                    if (horizontalOverlap) {
+                        const nextTop = Math.min(next.startMin / 60 * layout.HOUR_HEIGHT, 24 * layout.HOUR_HEIGHT - 2);
+                        assert.ok(top + renderer.timedHeight(item) <= nextTop + 1e-7);
+                    }
+                }
+            }
+        }
+    }
+    const isolated = renderer.placeTimed([{ startMin: 600, endMin: 615 }])[0];
+    assert.equal(renderer.timedHeight(isolated), 14);
+});
+
+test("subpixel and end-of-day events remain visible, named, focusable buttons", () => {
+    const data = sharedData();
+    data.snapshot.calendars.pop();
+    const calendar = data.snapshot.calendars[0];
+    calendar.events = [
+        otherTimedEvent("tiny", "23:59:00", "23:59:01"),
+        otherTimedEvent("next", "23:59:01", "23:59:02"),
+    ];
+    const blocks = gridEventBlocks(createRenderer().render(data));
+    assert.equal(blocks.length, 2);
+    for (const block of blocks) {
+        assert.ok(block.classes.has("short"));
+        assert.match(block.markup, /<button type="button"/);
+        assert.match(block.markup, /aria-label="23:59(?::0[01])?-23:59:0[12] Hidden (?:tiny|next)"/);
+        const { top, height } = timedBlockGeometry(block);
+        assert.ok(height >= 2 - 1e-7);
+        assert.ok(top + height <= 24 * layout.HOUR_HEIGHT + 1e-7);
+    }
+    assert.match(blocks[0].markup, /left:0%;width:50%/);
+    assert.match(blocks[1].markup, /left:50%;width:50%/);
+});
+
+test("short event activation opens accessible details with second-level times", () => {
+    for (const sharing of [false, true]) {
+        const data = orderingData();
+        const calendar = data.snapshot.calendars[0];
+        const event = otherTimedEvent("tiny", "09:00:00", "09:00:01");
+        calendar.events = [event, otherTimedEvent("next", "09:00:01", "09:00:02")];
+        data.settings.shareMode = sharing;
+        const renderer = createRenderer();
+        renderer.apply(data);
+        const target = {
+            dataset: sharing
+                ? { shareTime: "09:00–09:00:01" }
+                : { cal: calendar.id, ev: event.id },
+            classList: { contains() { return false; } },
+            closest(selector) { return selector === ".ev" ? this : null; },
+            getBoundingClientRect() { return { left: 20, top: 20, bottom: 22 }; },
+        };
+        renderer.dispatch("click", target, null, { stopPropagation() {} });
+        const popover = renderer.element("popover");
+        assert.equal(popover.hidden, false);
+        assert.match(popover.innerHTML, /09:00\s*–\s*09:00:01/);
+        if (sharing) assert.doesNotMatch(popover.innerHTML, /Hidden tiny/);
+        else assert.match(popover.innerHTML, /Hidden tiny/);
+    }
+});
+
+test("short event styles allow a visible two-pixel border-box height", async () => {
+    const css = await readFile(new URL("./ui/app.css", import.meta.url), "utf8");
+    const short = css.match(/\.ev\.short\s*\{([^}]*)\}/)?.[1];
+    assert.ok(short);
+    assert.match(short, /padding-block:\s*0\s*;/);
+    assert.match(short, /line-height:\s*9px\s*;/);
+});
+
+test("dense timed lanes use their actual width to constrain padding and borders", async () => {
+    const data = sharedData();
+    data.snapshot.calendars.pop();
+    const calendar = data.snapshot.calendars[0];
+    const time = (second) => `09:${String(Math.floor(second / 60)).padStart(2, "0")}:${String(second % 60).padStart(2, "0")}`;
+    calendar.events = Array.from({ length: 100 }, (_, index) =>
+        otherTimedEvent(`dense-${index}`, time(index), time(index + 1)));
+    const blocks = gridEventBlocks(createRenderer().render(data));
+    assert.equal(blocks.length, 100);
+    for (const block of blocks) assert.match(block.markup, /width:1%;--ev-lane:1;/);
+
+    const css = await readFile(new URL("./ui/app.css", import.meta.url), "utf8");
+    const column = css.match(/\.col\s*\{([^}]*)\}/)?.[1];
+    const lanes = css.match(/\.col \.ev\s*\{([^}]*)\}/)?.[1];
+    assert.ok(column);
+    assert.match(column, /container-type:\s*inline-size\s*;/);
+    assert.ok(lanes);
+    assert.match(lanes, /--ev-lane-size:\s*calc\(var\(--ev-lane,\s*100\) \* 1cqw\)\s*;/);
+    assert.match(lanes, /border-inline-width:\s*clamp\(0px,\s*calc\(var\(--ev-lane-size\) - 2px\),\s*1px\)\s*;/);
+    assert.match(lanes, /padding-inline:\s*clamp\(0px,\s*calc\(\(var\(--ev-lane-size\) - 2px\) \/ 2\),\s*3px\)\s*;/);
+    assert.match(css, /@supports not \(width:\s*1cqw\)/);
 });
 
 test("additional all-day events do not prevent same-row shared copies from connecting", () => {
@@ -1466,7 +1699,7 @@ test("only connected sharing frames use rounded, indented joins", async () => {
     assert.match(css, /\.allday-row:not\(\.allday-last\) \.allday\s*\{\s*border-bottom:\s*0\s*;/);
 });
 
-test("sharing mode uses dotted and hatched declined events without overriding joined edges", async () => {
+test("declined events use strikethrough in both modes while sharing retains dotted, hatched joins", async () => {
     const css = await readFile(new URL("./ui/app.css", import.meta.url), "utf8");
     const sharingRule = css.match(/\.ev\.sharing\.declined\s*\{([^}]*)\}/)?.[1];
     assert.ok(sharingRule);
@@ -1483,13 +1716,16 @@ test("sharing mode uses dotted and hatched declined events without overriding jo
     assert.ok(swatchRule);
     assert.match(swatchRule, /background:\s*repeating-linear-gradient\(135deg,/);
 
+    const declinedRule = css.match(/\.ev\.declined\s*\{([^}]*)\}/)?.[1];
+    assert.ok(declinedRule);
+    assert.match(declinedRule, /text-decoration:\s*line-through\s*;/);
     const normalRule = css.match(/\.ev\.declined:not\(\.sharing\)\s*\{([^}]*)\}/)?.[1];
     assert.ok(normalRule);
     assert.match(normalRule, /opacity:\s*0\.55\s*;/);
-    assert.match(normalRule, /text-decoration:\s*line-through\s*;/);
+    assert.doesNotMatch(sharingRule, /opacity\s*:/);
 
     const html = await readFile(new URL("./ui/index.html", import.meta.url), "utf8");
-    assert.match(html, /class="swatch share declined"><\/i>辞退（点線・斜線）/);
+    assert.match(html, /class="swatch share declined"><\/i>辞退（点線・斜線・打ち消し線）/);
 });
 
 test("visible declined copies match the same event without changing the snapshot", () => {

@@ -1,4 +1,4 @@
-export const HOUR_HEIGHT = 46;
+export const HOUR_HEIGHT = 54;
 export const MIN_GRID_HEIGHT = 180;
 
 function timeToMinutes(value, fallback) {

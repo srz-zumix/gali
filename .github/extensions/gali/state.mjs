@@ -118,7 +118,10 @@ function startOfWeek(iso) {
 
 function weeksForRange(range) {
     const weeks = [];
-    for (let since = startOfWeek(range.since); since <= range.until; since = addDays(since, 7)) {
+    // Compare parsed dates, not ISO strings: past year 9999 the string order
+    // ("10000-01-03" < "9999-12-31") no longer matches chronological order.
+    const end = parseISODate(range.until).getTime();
+    for (let since = startOfWeek(range.since); parseISODate(since).getTime() <= end; since = addDays(since, 7)) {
         weeks.push({ since, until: addDays(since, 6) });
     }
     return weeks;
@@ -347,6 +350,11 @@ export class ProfileState {
 
     invalidateScan() {
         this.scanGeneration += 1;
+        this.clearScanResults();
+    }
+
+    /** Drop the current scan results without invalidating queued scans. */
+    clearScanResults() {
         this.scan = null;
         this.scanProgress = null;
         this.scanIndex = null;
@@ -755,7 +763,9 @@ export class ProfileState {
             this.pruneCache().catch(() => {});
         } catch (error) {
             if (!stale()) {
-                this.invalidateScan();
+                // Keep the generation: queued scans with current inputs (e.g. a
+                // retry or a shorter scan) must still run after this failure.
+                this.clearScanResults();
                 this.error = error instanceof GaliError ? error.message : String(error && error.message);
             }
         } finally {
