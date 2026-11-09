@@ -5,7 +5,7 @@
 // the same profile stay in sync and a reload rehydrates from disk.
 
 import { GaliError, hasReferences } from "./gali.mjs";
-import { clipToDay, computeFreeSlots } from "./freebusy.mjs";
+import { computeFreeSlots, dayBounds } from "./freebusy.mjs";
 import { fetchWeek, mergeEventChunks, pruneCache } from "./cache.mjs";
 import { holidayDatesFrom } from "./classify.mjs";
 import {
@@ -131,7 +131,15 @@ function eventInRange(event, range) {
     if (event.allDay) {
         return range.days.some((day) => day >= event.start && (event.end ? day < event.end : day === event.start));
     }
-    return range.days.some((day) => clipToDay(event, day) !== null);
+    // Absolute-time overlap, not wall-clock clipping: across a DST rollback an
+    // event can end at an earlier wall-clock time than it starts.
+    const start = new Date(event.start);
+    const end = event.end ? new Date(event.end) : new Date(start.getTime() + 30 * 60_000);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+    return range.days.some((day) => {
+        const [dayStart, dayEnd] = dayBounds(day);
+        return end > dayStart && start < dayEnd;
+    });
 }
 
 export function resolveRange(settings) {
