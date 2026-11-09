@@ -28,7 +28,7 @@ gali copilot extension install
 `--prefix <directory>` で任意のディレクトリを指定できます。
 `gali copilot extension update` で更新、`gali copilot extension uninstall` で削除できます。
 
-GitHub Copilot app で他ユーザーの予定を週表示するキャンバス拡張を同梱しています。詳細は
+GitHub Copilot app で他ユーザーの予定を週表示し、メンバーのプリセットを保存できるキャンバス拡張を同梱しています。詳細は
 [.github/extensions/gali/README.md](.github/extensions/gali/README.md) を参照してください。
 
 ## Completion sources

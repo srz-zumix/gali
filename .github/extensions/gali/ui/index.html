@@ -11,10 +11,20 @@
             <div class="row">
                 <div class="btn-group">
                     <button type="button" data-nav="prev" title="前の期間">‹</button>
-                    <button type="button" data-nav="today">今日</button>
                     <button type="button" data-nav="next" title="次の期間">›</button>
                 </div>
-                <h1 id="range-label">読み込み中…</h1>
+                <h1 class="range-heading">
+                    <button
+                        type="button"
+                        id="date-picker-toggle"
+                        aria-haspopup="dialog"
+                        aria-controls="date-calendar"
+                        aria-expanded="false"
+                        aria-describedby="date-picker-error"
+                        title="カレンダーから開始日を選択"
+                        disabled
+                    ><span id="range-label">読み込み中…</span><span class="range-caret" aria-hidden="true">▾</span></button>
+                </h1>
                 <span class="grow"></span>
                 <div class="btn-group" id="view-group">
                     <button type="button" data-view="day">1日</button>
@@ -22,11 +32,53 @@
                     <button type="button" data-view="week">週</button>
                 </div>
                 <button type="button" id="refresh" title="gali で再取得">再取得</button>
+                <button type="button" id="toggle-share" aria-pressed="false" disabled>共有モード</button>
                 <button type="button" id="toggle-adjust" aria-expanded="false">調整</button>
                 <button type="button" id="toggle-settings" aria-expanded="false">設定</button>
             </div>
+            <p class="status error" id="date-picker-error" role="alert" hidden></p>
+            <p class="status error" id="share-mode-error" role="alert" hidden>
+                <span id="share-mode-error-text"></span>
+                <button type="button" id="retry-share-mode">再試行</button>
+            </p>
 
             <div class="row chips" id="chips"></div>
+            <p class="hint" id="calendar-order-message" role="status" aria-live="polite" hidden></p>
+
+            <div class="row preset-toolbar">
+                <label for="preset-select">メンバープリセット</label>
+                <select id="preset-select">
+                    <option value="">プリセットを選択</option>
+                </select>
+                <button type="button" id="apply-preset" disabled>適用</button>
+                <button type="button" id="toggle-presets" aria-expanded="false">管理</button>
+            </div>
+            <p class="hint" id="preset-message" role="status" aria-live="polite" hidden></p>
+            <p class="status error" id="preset-store-error" role="alert" hidden></p>
+
+            <section class="panel" id="presets" hidden>
+                <div class="field">
+                    <label for="preset-name">表示中のメンバーを名前付きで保存</label>
+                    <div class="inline">
+                        <input id="preset-name" type="text" maxlength="80" placeholder="例: プロジェクトチーム" />
+                        <button type="button" id="save-preset" disabled>新規保存</button>
+                    </div>
+                    <p class="hint">プリセットはすべてのプロファイルで共有します。適用すると現在のメンバーを置き換えます。</p>
+                </div>
+                <div class="field">
+                    <p class="hint" id="preset-summary">プリセットを選択するとメンバーを確認できます。</p>
+                    <div class="inline">
+                        <button type="button" id="update-preset" disabled>現在のメンバーで更新</button>
+                        <button type="button" id="delete-preset" disabled>削除</button>
+                        <button type="button" id="refresh-presets">一覧を再読込</button>
+                    </div>
+                    <div class="inline" id="preset-delete-confirm" hidden>
+                        <span>選択したプリセットを削除しますか？</span>
+                        <button type="button" id="confirm-delete-preset">削除する</button>
+                        <button type="button" id="cancel-delete-preset">キャンセル</button>
+                    </div>
+                </div>
+            </section>
 
             <section class="panel" id="adjust" hidden>
                 <div class="inline adjust-controls">
@@ -101,7 +153,7 @@
                 <fieldset class="field">
                     <legend>表示</legend>
                     <label class="check"><input type="checkbox" id="show-declined" /> 辞退した予定も表示する</label>
-                    <p class="hint">辞退した予定は薄く表示され、空き時間の計算には含めません。</p>
+                    <p class="hint">辞退した予定は通常表示では薄く、共有モードでは点線と斜線で表示され、空き時間の計算には含めません。</p>
                     <label class="check"><input type="checkbox" id="show-free" /> 共通の空き時間を表示する</label>
                     <div class="inline">
                         <label for="work-start">勤務時間</label>
@@ -125,7 +177,7 @@
                         <label for="holiday-cal">祝日カレンダー</label>
                         <input id="holiday-cal" type="text" placeholder="en.japanese#holiday@group.v.calendar.google.com" />
                     </div>
-                    <div class="inline">
+                    <div class="inline" id="policy-pattern-field">
                         <label for="policy-patterns">ポリシー枠のタイトル</label>
                         <input id="policy-patterns" type="text" placeholder="NoMTG, ノーミーティング" />
                     </div>
@@ -136,7 +188,7 @@
                 </p>
             </section>
 
-            <div class="legend">
+            <div class="legend" id="normal-legend">
                 <span><i class="swatch solid"></i>詳細まで閲覧可</span>
                 <span><i class="swatch masked"></i>予定あり（詳細非公開）</span>
                 <span><i class="swatch free"></i>空き時間扱い</span>
@@ -145,9 +197,44 @@
                     ><i class="swatch badge">補</i>参照カレンダーで補完（推定）</span
                 >
             </div>
+            <div class="legend" id="share-legend" hidden>
+                <span><i class="swatch share"></i>予定あり</span>
+                <span><i class="swatch shared"></i>共通予定（同じ色・番号）</span>
+                <span><i class="swatch share declined"></i>辞退（点線・斜線・打ち消し線）</span>
+                <span>メンバー名・時間帯・辞退状況は表示されます</span>
+            </div>
 
-            <p class="status" id="status"></p>
+            <p class="status" id="status" role="status" aria-live="polite" aria-atomic="true"></p>
         </header>
+
+        <dialog class="date-dialog" id="date-calendar" aria-labelledby="date-calendar-title">
+            <div class="date-dialog-heading">
+                <h2 id="date-calendar-title">開始日を選択</h2>
+                <button type="button" id="date-calendar-close" aria-label="カレンダーを閉じる">×</button>
+            </div>
+            <div class="date-calendar-navigation">
+                <button type="button" id="date-calendar-prev" aria-label="前の月">‹</button>
+                <h3 id="date-calendar-month" aria-live="polite" aria-atomic="true" tabindex="-1"></h3>
+                <button type="button" id="date-calendar-next" aria-label="次の月">›</button>
+            </div>
+            <table class="date-calendar-grid" role="grid" aria-labelledby="date-calendar-month">
+                <thead>
+                    <tr>
+                        <th scope="col" abbr="日曜日">日</th>
+                        <th scope="col" abbr="月曜日">月</th>
+                        <th scope="col" abbr="火曜日">火</th>
+                        <th scope="col" abbr="水曜日">水</th>
+                        <th scope="col" abbr="木曜日">木</th>
+                        <th scope="col" abbr="金曜日">金</th>
+                        <th scope="col" abbr="土曜日">土</th>
+                    </tr>
+                </thead>
+                <tbody id="date-calendar-days"></tbody>
+            </table>
+            <div class="date-calendar-footer">
+                <button type="button" id="date-calendar-today">今日</button>
+            </div>
+        </dialog>
 
         <main id="calendar-main">
             <div id="grid" class="grid-wrap"></div>

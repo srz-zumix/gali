@@ -14,7 +14,7 @@ export function buildSharedEventGroups(calendars) {
         if (calendar.error) continue;
         for (const event of calendar.events) {
             if (!event.id || !event.start || Number.isNaN(new Date(event.start).getTime())) continue;
-            if (event.status === "cancelled" || event.responseStatus === "declined") continue;
+            if (event.status === "cancelled") continue;
 
             const kind = event.allDay ? "day" : "time";
             const keys = [`${kind}:id:${eventKey(event, event.id)}`];

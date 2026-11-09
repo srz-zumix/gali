@@ -10,6 +10,7 @@
 // Wiring only — the interesting parts live in the sibling modules:
 //   gali.mjs      spawn the CLI, normalize Google Calendar payloads
 //   store.mjs     durable per-profile settings under $COPILOT_HOME
+//   presets.mjs   user-wide member presets shared between profiles
 //   state.mjs     shared per-profile state + fetch orchestration
 //   freebusy.mjs  free/busy math
 //   server.mjs    loopback HTTP server + SSE
@@ -19,8 +20,9 @@ import { joinSession, createCanvas, CanvasError } from "@github/copilot-sdk/exte
 
 import { listCalendars, GaliError } from "./gali.mjs";
 import { formatMinutes } from "./freebusy.mjs";
+import { MAX_PRESET_NAME_LENGTH, PRESET_ID_PATTERN, PresetError, presetStore } from "./presets.mjs";
 import { normalizeProfile, PROFILE_PATTERN, settingsFileFor } from "./store.mjs";
-import { getProfileState, todayISO } from "./state.mjs";
+import { CalendarOrderError, getProfileState, todayISO } from "./state.mjs";
 import { startServer } from "./server.mjs";
 
 const VIEWS = ["day", "3days", "week"];
@@ -31,6 +33,7 @@ const GRID_HEIGHT_SCHEMA = {
     minimum: 0,
     description: "Calendar viewport height in pixels (minimum 180). Zero restores automatic sizing.",
 };
+const PRESET_ID_SCHEMA = { type: "string", pattern: PRESET_ID_PATTERN.source };
 
 /** instanceId -> { profile, server, url, inputKey } */
 const instances = new Map();
@@ -60,6 +63,7 @@ function overridesFromInput(input) {
         "building",
         "showDeclined",
         "showCompletionDiff",
+        "shareMode",
         "workStart",
         "workEnd",
         "showFreeSlots",
@@ -127,11 +131,13 @@ function describe(state, { includeEvents = false } = {}) {
         profile: payload.profile,
         settingsFile: settingsFileFor(payload.profile),
         view: payload.settings.view,
+        shareMode: payload.settings.shareMode,
         range: payload.range,
         loading: payload.loading,
         error: payload.error,
         usingReferences: Boolean(payload.snapshot && payload.snapshot.usingReferences),
         fetchedAt: payload.snapshot ? payload.snapshot.fetchedAt : null,
+        cache: payload.snapshot ? payload.snapshot.cache : null,
         calendars: payload.snapshot
             ? payload.snapshot.calendars.map((calendar) => summarizeCalendar(calendar, includeEvents))
             : payload.settings.calendars.map((entry) => ({ id: entry.id, label: entry.label || entry.id })),
@@ -146,6 +152,15 @@ async function mutate(ctx, patch, { refresh = true } = {}) {
     const state = await stateFor(ctx);
     await state.updateSettings(patch, { refresh });
     return describe(state);
+}
+
+async function presetAction(task) {
+    try {
+        return await task();
+    } catch (error) {
+        if (error instanceof PresetError) throw new CanvasError(error.code, error.message);
+        throw error;
+    }
 }
 
 function requireCalendars(state) {
@@ -227,7 +242,7 @@ const canvas = createCanvas({
                 description: "Calendar IDs / email addresses to display.",
             },
             view: { type: "string", enum: VIEWS },
-            anchor: { type: "string", pattern: DATE_PATTERN, description: "Date to focus (YYYY-MM-DD)." },
+            anchor: { type: "string", pattern: DATE_PATTERN, description: "First displayed date (YYYY-MM-DD)." },
             refs: {
                 type: "array",
                 items: { type: "string" },
@@ -243,6 +258,10 @@ const canvas = createCanvas({
                 type: "boolean",
                 description:
                     "Show completion badges and their source calendars. Older CLIs show an inferred 補? badge with an unknown source. Display only; no extra gali call.",
+            },
+            shareMode: {
+                type: "boolean",
+                description: "Hide event details in the canvas and color matching events. This does not redact API or cached data.",
             },
             workStart: { type: "string", pattern: TIME_PATTERN },
             workEnd: { type: "string", pattern: TIME_PATTERN },
@@ -299,15 +318,98 @@ const canvas = createCanvas({
             },
         },
         {
+            name: "move_calendar",
+            description: "Move a calendar one column left or right without refetching.",
+            inputSchema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["id", "direction"],
+                properties: {
+                    id: { type: "string", minLength: 1 },
+                    direction: { type: "string", enum: ["left", "right"] },
+                },
+            },
+            handler: async (ctx) => {
+                const state = await stateFor(ctx);
+                try {
+                    await state.moveCalendar(ctx.input);
+                } catch (error) {
+                    if (error instanceof CalendarOrderError) throw new CanvasError(error.code, error.message);
+                    throw error;
+                }
+                return describe(state);
+            },
+        },
+        {
+            name: "list_member_presets",
+            description: "List saved member presets shared across all profiles.",
+            inputSchema: { type: "object", additionalProperties: false, properties: {} },
+            handler: async () => presetAction(async () => ({ presets: await presetStore.refresh() })),
+        },
+        {
+            name: "save_member_preset",
+            description: "Save the current profile's members as a new user-wide preset.",
+            inputSchema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["name"],
+                properties: { name: { type: "string", minLength: 1, maxLength: MAX_PRESET_NAME_LENGTH } },
+            },
+            handler: async (ctx) => presetAction(async () => {
+                const state = await stateFor(ctx);
+                return { preset: await state.createMemberPreset(ctx.input.name) };
+            }),
+        },
+        {
+            name: "update_member_preset",
+            description: "Replace a saved preset's members with the current profile's members.",
+            inputSchema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["id"],
+                properties: { id: PRESET_ID_SCHEMA },
+            },
+            handler: async (ctx) => presetAction(async () => {
+                const state = await stateFor(ctx);
+                return { preset: await state.updateMemberPreset(ctx.input.id) };
+            }),
+        },
+        {
+            name: "delete_member_preset",
+            description: "Delete a saved member preset without changing any profile's current members.",
+            inputSchema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["id"],
+                properties: { id: PRESET_ID_SCHEMA },
+            },
+            handler: async (ctx) => presetAction(async () => ({ preset: await presetStore.remove(ctx.input.id) })),
+        },
+        {
+            name: "apply_member_preset",
+            description: "Replace the current profile's members with those in a saved preset and refetch.",
+            inputSchema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["id"],
+                properties: { id: PRESET_ID_SCHEMA },
+            },
+            handler: async (ctx) => presetAction(async () => {
+                const state = await stateFor(ctx);
+                const preset = await state.applyMemberPreset(ctx.input.id);
+                return { preset, ...describe(state) };
+            }),
+        },
+        {
             name: "set_range",
-            description: "Change the displayed period: view mode and/or the focused date.",
+            description: "Change the displayed period: view mode and/or its first date.",
             inputSchema: {
                 type: "object",
                 additionalProperties: false,
                 properties: {
                     view: { type: "string", enum: VIEWS },
-                    anchor: { type: "string", pattern: DATE_PATTERN },
-                    today: { type: "boolean", description: "Jump to today." },
+                    anchor: { type: "string", pattern: DATE_PATTERN, description: "First displayed date (YYYY-MM-DD)." },
+                    today: { type: "boolean", description: "Start the displayed period today." },
                 },
             },
             handler: async (ctx) => {
@@ -339,12 +441,13 @@ const canvas = createCanvas({
         },
         {
             name: "set_display",
-            description: "Change display-only options (declined events, free-slot panel, working hours, viewport height) and scan tuning.",
+            description: "Change display-only options (sharing mode, declined events, free-slot panel, working hours, viewport height) and scan tuning.",
             inputSchema: {
                 type: "object",
                 additionalProperties: false,
                 properties: {
                     showDeclined: { type: "boolean" },
+                    shareMode: { type: "boolean", description: "Hide event details in the canvas; API and cached data are not redacted." },
                     showFreeSlots: { type: "boolean" },
                     gridHeight: GRID_HEIGHT_SCHEMA,
                     workStart: { type: "string", pattern: TIME_PATTERN },
@@ -374,7 +477,7 @@ const canvas = createCanvas({
         {
             name: "get_schedule",
             description:
-                "Read what the canvas currently shows: per-calendar stats, shared free slots, and optionally every event.",
+                "Read per-calendar stats, shared free slots, and optionally event details. Sharing mode masks the canvas only; this action returns the original data.",
             inputSchema: {
                 type: "object",
                 additionalProperties: false,

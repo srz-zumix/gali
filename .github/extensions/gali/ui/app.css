@@ -1,6 +1,6 @@
 :root {
     --gali-gutter: 56px;
-    --gali-hour-height: 46px;
+    --gali-hour-height: 54px;
     --gali-border: var(--border-color-default, rgba(128, 128, 128, 0.3));
     --gali-muted: var(--text-color-muted, #6b7280);
 }
@@ -26,7 +26,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
     font: inherit;
     color: inherit;
 }
@@ -54,7 +55,9 @@ button[aria-pressed="true"] {
 }
 
 input[type="text"],
-input[type="time"] {
+input[type="time"],
+input[type="date"],
+select {
     background: transparent;
     border: 1px solid var(--gali-border);
     border-radius: 6px;
@@ -95,6 +98,114 @@ input[type="text"] {
 
 .grow {
     flex: 1 1 auto;
+}
+
+.range-heading button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 2px 8px;
+    border-color: transparent;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+}
+
+.range-heading button:hover:not(:disabled),
+.range-heading button[aria-expanded="true"] {
+    background: color-mix(in srgb, var(--text-color-default, #1f2328) 8%, transparent);
+}
+
+.range-heading button:focus-visible {
+    outline: 2px solid var(--color-focus-outline, #3f7ee8);
+    outline-offset: 1px;
+}
+
+.range-caret {
+    color: var(--gali-muted);
+    font-size: 1.125em;
+}
+
+.date-dialog {
+    width: min(340px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    padding: 14px;
+    border: 1px solid var(--gali-border);
+    border-radius: 8px;
+    background: var(--background-color-default, #ffffff);
+    color: var(--text-color-default, #1f2328);
+    box-shadow: 0 8px 30px rgb(0 0 0 / 20%);
+}
+
+.date-dialog::backdrop {
+    background: rgb(0 0 0 / 30%);
+}
+
+.date-dialog-heading,
+.date-calendar-navigation {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.date-dialog-heading h2,
+.date-calendar-navigation h3 {
+    margin: 0;
+    font-size: var(--text-body-medium, 14px);
+    font-weight: var(--font-weight-semibold, 600);
+}
+
+.date-calendar-navigation {
+    margin: 12px 0 8px;
+}
+
+.date-calendar-grid {
+    width: 100%;
+    table-layout: fixed;
+    border-collapse: collapse;
+    text-align: center;
+}
+
+.date-calendar-grid th {
+    color: var(--gali-muted);
+    font-size: var(--text-body-small, 12px);
+    font-weight: normal;
+}
+
+.date-calendar-grid td {
+    height: 36px;
+    padding: 2px;
+    border: 0;
+    vertical-align: middle;
+}
+
+.date-calendar-grid button {
+    width: 100%;
+    min-height: 32px;
+    padding: 2px;
+    border-color: transparent;
+}
+
+.date-calendar-grid td.in-range button {
+    background: color-mix(in srgb, var(--true-color-blue, #3f7ee8) 10%, transparent);
+}
+
+.date-calendar-grid td[aria-selected="true"] button {
+    background: color-mix(in srgb, var(--true-color-blue, #3f7ee8) 22%, transparent);
+    border-color: var(--true-color-blue, #3f7ee8);
+}
+
+.date-calendar-grid button[aria-current="date"] {
+    text-decoration: underline;
+    text-underline-offset: 3px;
+}
+
+.date-calendar-footer {
+    display: flex;
+    justify-content: flex-end;
+    margin-top: 8px;
 }
 
 h1 {
@@ -171,8 +282,26 @@ h1 {
     color: var(--gali-muted);
 }
 
+.chip-order {
+    display: inline-flex;
+    gap: 1px;
+}
+
 .chips .empty {
     color: var(--gali-muted);
+}
+
+.preset-toolbar select {
+    min-width: 150px;
+    max-width: 100%;
+}
+
+.preset-toolbar label {
+    color: var(--gali-muted);
+}
+
+#preset-delete-confirm[hidden] {
+    display: none;
 }
 
 .panel {
@@ -245,6 +374,11 @@ code {
     font-size: var(--text-body-small, 12px);
 }
 
+.legend[hidden],
+#policy-pattern-field[hidden] {
+    display: none;
+}
+
 .legend span {
     display: inline-flex;
     align-items: center;
@@ -276,6 +410,21 @@ code {
     border-style: dashed;
 }
 
+.swatch.share {
+    border-color: #6e7781;
+    background: rgba(110, 119, 129, 0.22);
+}
+
+.swatch.share.declined {
+    border-style: dotted;
+    background: repeating-linear-gradient(135deg, rgba(110, 119, 129, 0.22) 0 4px, transparent 4px 8px);
+}
+
+.swatch.shared {
+    border-color: #8250df;
+    background: rgba(130, 80, 223, 0.22);
+}
+
 .swatch.badge {
     width: auto;
     height: auto;
@@ -292,6 +441,31 @@ code {
     font-size: var(--text-body-small, 12px);
     color: var(--gali-muted);
     min-height: 16px;
+}
+
+.status.loading::before {
+    content: "";
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin: 0 6px 0 1px;
+    vertical-align: -1px;
+    border: 2px solid var(--border-color-default, #d0d7de);
+    border-top-color: var(--true-color-blue, #3f7ee8);
+    border-radius: 50%;
+    animation: gali-spin 0.8s linear infinite;
+}
+
+@keyframes gali-spin {
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .status.loading::before {
+        animation-duration: 2s;
+    }
 }
 
 .status.error {
@@ -386,6 +560,29 @@ table.cal th.owner {
     top: var(--gali-day-head, 28px);
 }
 
+table.cal th.owner[draggable="true"] {
+    cursor: grab;
+    user-select: none;
+}
+
+table.cal th.owner.dragging {
+    cursor: grabbing;
+    opacity: 0.5;
+}
+
+table.cal th.owner.drop-before {
+    box-shadow: inset 3px 0 var(--true-color-blue, #3f7ee8);
+}
+
+table.cal th.owner.drop-after {
+    box-shadow: inset -3px 0 var(--true-color-blue, #3f7ee8);
+}
+
+th.owner .drag-handle {
+    margin-right: 3px;
+    color: var(--gali-muted);
+}
+
 th.owner .owner-name {
     display: block;
     overflow: hidden;
@@ -415,8 +612,18 @@ td.daystart {
     border-left: 2px solid var(--gali-border);
 }
 
+/* Stretch connected all-day blocks to the height of the tallest cell. */
+table.cal tbody > tr.allday-row > td {
+    height: 1px;
+}
+
+.allday-row:not(.allday-last) .allday {
+    border-bottom: 0;
+}
+
 .allday {
     min-height: 22px;
+    height: 100%;
     padding: 2px;
     border-bottom: 1px solid var(--gali-border);
     display: flex;
@@ -427,6 +634,27 @@ td.daystart {
 .allday .ev {
     position: static;
     padding: 1px 4px;
+}
+
+.allday .ev.join-left,
+.allday .ev.join-right {
+    position: relative;
+    z-index: 1;
+    flex: 1 1 auto;
+}
+
+.allday .ev.join-left {
+    margin-left: -3px;
+    width: calc(100% + 3px);
+}
+
+.allday .ev.join-right {
+    margin-right: -3px;
+    width: calc(100% + 3px);
+}
+
+.allday .ev.join-left.join-right {
+    width: calc(100% + 6px);
 }
 
 .hours {
@@ -453,8 +681,11 @@ td.daystart {
 
 .col {
     position: relative;
+    container-type: inline-size;
     border-bottom: 1px solid var(--gali-border);
-    overflow: hidden;
+    /* Clip vertically while letting joined blocks cover the column separator. */
+    overflow: visible;
+    clip-path: inset(0 -1px 0 -1px);
 }
 
 .col .hline {
@@ -480,6 +711,7 @@ td.daystart {
 }
 
 .ev {
+    --ev-hatch: repeating-linear-gradient(135deg, var(--ev-fill) 0 4px, transparent 4px 8px);
     position: absolute;
     border-radius: 4px;
     border: 1px solid var(--ev-color, #3f7ee8);
@@ -494,8 +726,52 @@ td.daystart {
     width: 100%;
 }
 
+.col .ev {
+    --ev-lane-size: calc(var(--ev-lane, 100) * 1cqw);
+    border-inline-width: clamp(0px, calc(var(--ev-lane-size) - 2px), 1px);
+    padding-inline: clamp(0px, calc((var(--ev-lane-size) - 2px) / 2), 3px);
+}
+
+.ev.short {
+    padding-block: 0;
+    font-size: 9px;
+    line-height: 9px;
+}
+
+.ev.join-left {
+    border-left: 0;
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+}
+
+.ev.join-right {
+    border-right: 0;
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.ev.sharing.join-left,
+.ev.sharing.join-right {
+    border-radius: 14px / 25%;
+    padding-inline: 8px;
+}
+
+.col .ev.sharing.join-left,
+.col .ev.sharing.join-right {
+    padding-inline: clamp(0px, calc((var(--ev-lane-size) - 2px) / 2), 8px);
+}
+
+@supports not (width: 1cqw) {
+    .col .ev,
+    .col .ev.sharing.join-left,
+    .col .ev.sharing.join-right {
+        border-inline-width: 0;
+        padding-inline: 0;
+    }
+}
+
 .ev.masked {
-    background: repeating-linear-gradient(135deg, var(--ev-fill) 0 4px, transparent 4px 8px);
+    background: var(--ev-hatch);
 }
 
 .ev.transparent {
@@ -504,8 +780,38 @@ td.daystart {
 }
 
 .ev.declined {
-    opacity: 0.55;
     text-decoration: line-through;
+}
+
+.ev.declined:not(.sharing) {
+    opacity: 0.55;
+}
+
+.ev.sharing.declined {
+    border-style: dotted;
+}
+
+.ev.sharing:hover:not(:disabled) {
+    background: var(--ev-fill);
+}
+
+.ev.sharing.join-left,
+.ev.sharing.join-right,
+.ev.sharing.join-left:hover:not(:disabled),
+.ev.sharing.join-right:hover:not(:disabled) {
+    background: linear-gradient(var(--ev-fill), var(--ev-fill)), var(--background-color-default, #ffffff);
+}
+
+.ev.sharing.declined,
+.ev.sharing.declined:hover:not(:disabled) {
+    background: var(--ev-hatch);
+}
+
+.ev.sharing.declined.join-left,
+.ev.sharing.declined.join-right,
+.ev.sharing.declined.join-left:hover:not(:disabled),
+.ev.sharing.declined.join-right:hover:not(:disabled) {
+    background: var(--ev-hatch), var(--background-color-default, #ffffff);
 }
 
 .ev .t {
@@ -536,14 +842,40 @@ td.daystart {
     margin-right: 3px;
 }
 
+.ev.sharing .shared-badge {
+    border-color: var(--ev-color);
+    color: var(--ev-color);
+}
+
 .ev.compact .shared-badge {
     font-size: 8px;
     line-height: 8px;
 }
 
+.ev.short .shared-badge {
+    line-height: 7px;
+}
+
 .ev.peer-highlight {
     box-shadow: inset 0 0 0 2px var(--color-focus-outline, #3f7ee8);
     z-index: 3;
+}
+
+.ev.peer-highlight.join-left {
+    box-shadow: inset 0 2px var(--color-focus-outline, #3f7ee8),
+        inset 0 -2px var(--color-focus-outline, #3f7ee8),
+        inset -2px 0 var(--color-focus-outline, #3f7ee8);
+}
+
+.ev.peer-highlight.join-right {
+    box-shadow: inset 0 2px var(--color-focus-outline, #3f7ee8),
+        inset 0 -2px var(--color-focus-outline, #3f7ee8),
+        inset 2px 0 var(--color-focus-outline, #3f7ee8);
+}
+
+.ev.peer-highlight.join-left.join-right {
+    box-shadow: inset 0 2px var(--color-focus-outline, #3f7ee8),
+        inset 0 -2px var(--color-focus-outline, #3f7ee8);
 }
 
 /* ---------- free slots ---------- */

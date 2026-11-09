@@ -33,11 +33,12 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 export const RESOLVED_TZ = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || "";
 
 export class GaliError extends Error {
-    constructor(message, { exitCode = null, notFound = false } = {}) {
+    constructor(message, { exitCode = null, notFound = false, code = null } = {}) {
         super(message);
         this.name = "GaliError";
         this.exitCode = exitCode;
         this.notFound = notFound;
+        this.code = code;
     }
 }
 
@@ -218,6 +219,7 @@ async function fetchRaw(calendarId, options) {
     if (data.nextPageToken) {
         throw new GaliError(
             `${calendarId} の ${options.since}〜${options.until} は件数が多く、gali が全件を取得できませんでした（ページング未対応）。期間を短くしてください。`,
+            { code: "calendar_truncated" },
         );
     }
     return {

@@ -7,6 +7,7 @@ import { test } from "node:test";
 import { HOUR_HEIGHT, MIN_GRID_HEIGHT, computeGeometry, clampGridHeight } from "./ui/layout.mjs";
 
 test("the time axis always covers all 24 hours", () => {
+    assert.equal(HOUR_HEIGHT, 54);
     for (const settings of [
         {},
         { workStart: "09:00", workEnd: "18:00" },

@@ -160,3 +160,20 @@ test("completion provenance is normalized and retained in caches", { skip: proce
     assert.equal(disk.events[0].completedFromName, "Source calendar");
     assert.equal(disk.events[0].completionInferred, false);
 });
+
+test("a CLI continuation token is surfaced as a truncation error", { skip: process.platform === "win32" }, async (t) => {
+    const directory = await mkdtemp(path.join(tmpdir(), "gali-truncated-test-"));
+    const originalBin = process.env.GALI_BIN;
+    t.after(async () => {
+        if (originalBin === undefined) delete process.env.GALI_BIN;
+        else process.env.GALI_BIN = originalBin;
+        await rm(directory, { recursive: true, force: true });
+    });
+    const binary = path.join(directory, "gali");
+    process.env.GALI_BIN = binary;
+    await writeFile(binary, `#!/bin/sh\nprintf '%s\\n' '{"items":[],"nextPageToken":"more"}'\n`, { mode: 0o755 });
+    await assert.rejects(
+        collectCalendar("alice", { since: "2026-03-02", until: "2026-03-08" }),
+        (error) => error instanceof GaliError && error.code === "calendar_truncated",
+    );
+});
