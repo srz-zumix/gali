@@ -15,11 +15,14 @@ function createRenderer({ now } = {}) {
     const elements = new Map();
     const listeners = new Map();
     const blocks = [];
+    const intervals = [];
+    const nowLines = { html: null, lines: [] };
+    let current = now;
     const ClockDate = now === undefined ? Date : class extends Date {
         constructor(...args) {
-            super(...(args.length ? args : [now]));
+            super(...(args.length ? args : [current]));
         }
-        static now() { return now; }
+        static now() { return current; }
     };
     const context = createContext({
         ...layout,
@@ -73,7 +76,17 @@ function createRenderer({ now } = {}) {
                                 closest(value) { return value === "button[data-picker-date]" ? this : null; },
                             };
                         },
-                        querySelectorAll() { return blocks.filter((block) => block.dataset.shared); },
+                        querySelectorAll(selector) {
+                            if (selector === ".col .now") {
+                                if (nowLines.html !== this.innerHTML) {
+                                    nowLines.html = this.innerHTML;
+                                    nowLines.lines = [...this.innerHTML.matchAll(/class="now" style="top:([^"]+)"/g)]
+                                        .map((match) => ({ style: { top: match[1] } }));
+                                }
+                                return nowLines.lines;
+                            }
+                            return blocks.filter((block) => block.dataset.shared);
+                        },
                         getBoundingClientRect() { return { width: 200, height: 100 }; },
                     });
                 }
@@ -84,6 +97,7 @@ function createRenderer({ now } = {}) {
         ResizeObserver: class { observe() {} },
         EventSource: class {},
         setTimeout,
+        setInterval(handler, delay) { intervals.push({ handler, delay }); return intervals.length; },
         URLSearchParams,
         location: { search: "?token=test-token" },
         fetch: () => new Promise(() => {}),
@@ -178,6 +192,18 @@ function createRenderer({ now } = {}) {
         },
         useFetch(handler) {
             context.fetch = handler;
+        },
+        setNow(value) {
+            current = value;
+        },
+        intervals() {
+            return intervals.map(({ delay }) => delay);
+        },
+        tick() {
+            for (const { handler } of intervals) handler();
+        },
+        nowLines() {
+            return context.document.getElementById("grid").querySelectorAll(".col .now");
         },
         setFocus(element) {
             context.document.activeElement = element;
@@ -2391,4 +2417,159 @@ test("preset save errors remain visible and preserve the entered name", async ()
     assert.equal(renderer.element("preset-message").hidden, false);
     assert.match(renderer.element("preset-message").textContent, /保存に失敗しました/);
     assert.equal(renderer.element("save-preset").disabled, false);
+});
+
+test("the current-time line moves in place without re-rendering the grid", () => {
+    const renderer = createRenderer({ now: new Date(2026, 2, 15, 9, 0).getTime() });
+    renderer.apply(dateData("2026-03-15", "3days"));
+    assert.ok(renderer.intervals().some((delay) => delay > 0 && delay <= 5 * 60 * 1000));
+    const html = renderer.element("grid").innerHTML;
+    const calendars = renderer.data().snapshot.calendars.length;
+    assert.equal(renderer.nowLines().length, calendars);
+    assert.ok(renderer.nowLines().every((line) => line.style.top === `${9 * layout.HOUR_HEIGHT}px`));
+
+    renderer.setNow(new Date(2026, 2, 15, 9, 30, 30).getTime());
+    renderer.tick();
+    assert.equal(renderer.element("grid").innerHTML, html);
+    assert.ok(renderer.nowLines().every((line) => line.style.top === `${(9 + 30.5 / 60) * layout.HOUR_HEIGHT}px`));
+
+    renderer.setNow(new Date(2026, 2, 15, 10, 0).getTime());
+    renderer.dispatch("visibilitychange");
+    assert.ok(renderer.nowLines().every((line) => line.style.top === `${10 * layout.HOUR_HEIGHT}px`));
+});
+
+test("the current-time line follows today across midnight", () => {
+    const renderer = createRenderer({ now: new Date(2026, 2, 15, 23, 59).getTime() });
+    renderer.apply(dateData("2026-03-15", "3days"));
+    const before = renderer.element("grid").innerHTML;
+    assert.match(before, /<th class="day today"[^>]*>[^<]*15/);
+
+    renderer.setNow(new Date(2026, 2, 16, 0, 1).getTime());
+    renderer.tick();
+    const after = renderer.element("grid").innerHTML;
+    assert.notEqual(after, before);
+    assert.match(after, /<th class="day today"[^>]*>[^<]*16/);
+    assert.equal(renderer.nowLines().length, renderer.data().snapshot.calendars.length);
+    assert.ok(renderer.nowLines().every((line) => line.style.top === `${(1 / 60) * layout.HOUR_HEIGHT}px`));
+});
+
+function recurringUiData() {
+    const data = sharingData();
+    data.settings.slotMinutes = 30;
+    data.settings.scanWeeks = 4;
+    data.scan.id = "scan-before";
+    data.scan.recurringMeetings = [{
+        title: "SECRET_RECURRING_TITLE",
+        firstStart: "2026-10-12T10:00:00",
+        attendees: ["alice", "bob"],
+        occurrences: 2,
+        durations: [60],
+        identified: true,
+        retainedOccurrences: 0,
+    }];
+    return data;
+}
+
+function recurringUiResult(scanId, seriesIndex = null, durationMinutes = 30) {
+    return {
+        scanId, seriesIndex, retainedOccurrences: 0,
+        from: "2026-10-12", until: "2026-11-08", recurrence: "weekly", durationMinutes,
+        candidates: [{
+            pattern: { weekday: 1, anchor: "2026-10-12" }, start: "10:00", end: "10:30",
+            expectedCount: 2, freeCount: 1, busyCount: 1, excludedCount: 0,
+            occurrences: [
+                { day: "2026-10-12", status: "free" },
+                { day: "2026-10-19", status: "busy", blockers: ["Alice"] },
+            ],
+        }],
+    };
+}
+
+test("a new recurring meeting scan displays occurrence coverage and conflict dates", async () => {
+    const renderer = createRenderer();
+    const data = recurringUiData();
+    renderer.apply(data);
+    renderer.element("scan-recurrence").value = "weekly";
+    await renderer.fire("scan-recurrence", "change");
+    const calls = [];
+    const updated = { ...data, revision: 2, scan: { ...data.scan, id: "scan-after" } };
+    renderer.useFetch(async (url, options) => {
+        const route = new URL(url, "http://localhost").pathname;
+        const body = JSON.parse(options.body);
+        calls.push({ route, body });
+        if (route === "/api/scan") return { ok: true, json: async () => updated };
+        assert.equal(route, "/api/recurring");
+        return { ok: true, json: async () => ({ recurring: recurringUiResult("scan-after") }) };
+    });
+    await renderer.fire("scan-btn", "click");
+    assert.deepEqual(calls, [
+        { route: "/api/scan", body: { durationMinutes: 30, weeks: 4, force: false } },
+        { route: "/api/recurring", body: { scanId: "scan-after", recurrence: "weekly", durationMinutes: 30, seriesIndex: null } },
+    ]);
+    const html = renderer.element("tab-candidates").innerHTML;
+    assert.match(html, /毎週 月曜日 10:00–10:30/);
+    assert.match(html, /空き 1\/2回 \/ 衝突 1回/);
+    assert.match(html, /2026-10-19 予定あり（Alice）/);
+    assert.match(html, /表示期間外は未確認/);
+    assert.match(html, /衝突あり（1）/);
+});
+
+test("relocation uses the selected series and duration, and sharing masks its identity", async () => {
+    const renderer = createRenderer();
+    const data = recurringUiData();
+    renderer.apply(data);
+    assert.match(renderer.element("move-series").innerHTML, /SECRET_RECURRING_TITLE/);
+    renderer.element("move-series").value = "0";
+    await renderer.fire("move-series", "change");
+    assert.equal(renderer.element("move-duration").value, "60");
+    renderer.element("move-recurrence").value = "weekly";
+    const calls = [];
+    renderer.useFetch(async (url, options) => {
+        calls.push({ route: new URL(url, "http://localhost").pathname, body: JSON.parse(options.body) });
+        return { ok: true, json: async () => ({ recurring: recurringUiResult("scan-before", 0, 60) }) };
+    });
+    await renderer.fire("move-search", "click");
+    assert.deepEqual(calls, [{
+        route: "/api/recurring",
+        body: { scanId: "scan-before", recurrence: "weekly", durationMinutes: 60, seriesIndex: 0 },
+    }]);
+    assert.match(renderer.element("tab-candidates").innerHTML, /SECRET_RECURRING_TITLE/);
+    renderer.apply({ ...data, revision: 2, settings: { ...data.settings, shareMode: true } });
+    for (const id of ["tab-candidates", "tab-shared", "move-series", "move-hint", "move-error"]) {
+        assert.doesNotMatch(renderer.element(id).innerHTML, /SECRET_/);
+        assert.doesNotMatch(renderer.element(id).textContent, /SECRET_/);
+    }
+    assert.match(renderer.element("tab-candidates").innerHTML, /既存予定の移動先/);
+    assert.match(renderer.element("tab-candidates").innerHTML, /2026-10-19 予定あり/);
+});
+
+test("variable-duration meetings require an explicit relocation duration", async () => {
+    const renderer = createRenderer();
+    const data = recurringUiData();
+    data.scan.recurringMeetings[0].durations = [30, 60];
+    renderer.apply(data);
+    renderer.element("move-series").value = "0";
+    await renderer.fire("move-series", "change");
+    assert.equal(renderer.element("move-duration").value, "");
+    assert.match(renderer.element("move-hint").textContent, /回ごとに長さが異なります/);
+    renderer.element("move-recurrence").value = "weekly";
+    await renderer.fire("move-search", "click");
+    assert.match(renderer.element("move-error").textContent, /15〜480分/);
+});
+
+test("a delayed recurrence result cannot replace a newer scan", async () => {
+    const renderer = createRenderer();
+    const data = recurringUiData();
+    renderer.apply(data);
+    renderer.element("move-series").value = "0";
+    await renderer.fire("move-series", "change");
+    renderer.element("move-recurrence").value = "weekly";
+    let respond;
+    renderer.useFetch(() => new Promise((resolve) => { respond = resolve; }));
+    const pending = renderer.fire("move-search", "click");
+    renderer.apply({ ...data, revision: 2, scan: { ...data.scan, id: "scan-new" } });
+    respond({ ok: true, json: async () => ({ recurring: recurringUiResult("scan-before", 0, 60) }) });
+    await pending;
+    assert.doesNotMatch(renderer.element("tab-candidates").innerHTML, /2026-10-19 予定あり/);
+    assert.equal(renderer.data().scan.id, "scan-new");
 });

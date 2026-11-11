@@ -12,7 +12,7 @@ import path from "node:path";
 
 import { listCalendars, GaliError } from "./gali.mjs";
 import { PresetError, presetStore } from "./presets.mjs";
-import { CalendarOrderError, getProfileState, shiftAnchor, todayISO } from "./state.mjs";
+import { CalendarOrderError, RecurringSearchError, getProfileState, shiftAnchor, todayISO } from "./state.mjs";
 
 const UI_DIR = path.dirname(fileURLToPath(new URL("./ui/index.html", import.meta.url)));
 
@@ -283,6 +283,17 @@ async function handleRequest(req, res, { profile, instanceId, token, port, strea
         } else if (route === "/api/whatif") {
             const result = state.whatIf(Array.isArray(body.keys) ? body.keys : []);
             sendJson(res, 200, { whatIf: result, ...state.toJSON() });
+            return;
+        } else if (route === "/api/recurring") {
+            try {
+                sendJson(res, 200, { recurring: state.findRecurring(body) });
+            } catch (error) {
+                if (error instanceof RecurringSearchError) {
+                    sendJson(res, 400, { error: error.message, code: error.code });
+                } else {
+                    sendJson(res, 500, { error: toMessage(error), code: "recurring_failed" });
+                }
+            }
             return;
         } else if (route === "/api/navigate") {
             const direction = body.direction === "prev" ? -1 : body.direction === "next" ? 1 : 0;

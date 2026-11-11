@@ -4,6 +4,8 @@
 // State is keyed by profile — never by canvas instance — so two panels showing
 // the same profile stay in sync and a reload rehydrates from disk.
 
+import { randomUUID } from "node:crypto";
+
 import { GaliError, hasReferences } from "./gali.mjs";
 import { computeFreeSlots, dayBounds } from "./freebusy.mjs";
 import { fetchWeek, mergeEventChunks, pruneCache } from "./cache.mjs";
@@ -19,6 +21,8 @@ import {
 } from "./analysis.mjs";
 import { loadSettings, saveSettings, sanitizeSettings, normalizeProfile } from "./store.mjs";
 import { presetStore } from "./presets.mjs";
+import { findRecurringSlots, RECURRENCES } from "./recurring.mjs";
+import { findRecurringSeries } from "./series.mjs";
 
 const PALETTE = [
     "#3f7ee8",
@@ -79,6 +83,13 @@ function calendarsInSettingsOrder(calendars, settings) {
 }
 
 export class CalendarOrderError extends Error {
+    constructor(code, message) {
+        super(message);
+        this.code = code;
+    }
+}
+
+export class RecurringSearchError extends Error {
     constructor(code, message) {
         super(message);
         this.code = code;
@@ -196,6 +207,7 @@ export class ProfileState {
         this.scanInFlightGeneration = null;
         this.scanGeneration = 0;
         this.scanCalendars = null;
+        this.scanSeries = null;
         this.fetchGeneration = 0;
         this.fetchRequestId = 0;
         this.latestFetchRequest = null;
@@ -370,6 +382,7 @@ export class ProfileState {
         this.scanHolidays = null;
         this.scanSettings = null;
         this.scanCalendars = null;
+        this.scanSeries = null;
     }
 
     /** Everything the displayed snapshot depends on. */
@@ -731,12 +744,15 @@ export class ProfileState {
             });
             const { blockers, nearMiss } = analyzeBlockers(slots, calendars);
             const shared = findSharedMeetings(index, { minAttendees: 2 });
+            const series = findRecurringSeries(index);
 
             this.scanIndex = index;
             this.scanDays = days;
             this.scanHolidays = holidays;
             this.scanSettings = analysisSettings;
+            this.scanSeries = series;
             this.scan = {
+                id: randomUUID(),
                 fetchedAt: new Date().toISOString(),
                 from,
                 until,
@@ -755,6 +771,7 @@ export class ProfileState {
                 scannedSlots,
                 blockers,
                 nearMiss: nearMiss.slice(0, 60),
+                recurringMeetings: series.map(({ movableKeys, ...group }) => group),
                 sharedMeetings: shared.map((group) => ({
                     title: group.title,
                     detailsVisible: group.detailsVisible,
@@ -791,6 +808,41 @@ export class ProfileState {
             durationMinutes: this.scan.durationMinutes,
             holidays: this.scanHolidays,
         });
+    }
+
+    findRecurring({ scanId, recurrence, durationMinutes, seriesIndex } = {}) {
+        if (!this.scan || !this.scanIndex || scanId !== this.scan.id) {
+            throw new RecurringSearchError("scan_stale", "スキャン結果が変わりました。もう一度候補を探してください。");
+        }
+        if (!RECURRENCES.includes(recurrence)) {
+            throw new RecurringSearchError("invalid_recurrence", "繰り返し周期を選択してください。");
+        }
+        if (!Number.isInteger(durationMinutes) || durationMinutes < 15 || durationMinutes > 480) {
+            throw new RecurringSearchError("invalid_duration", "会議の長さは15〜480分で指定してください。");
+        }
+        let series = null;
+        if (seriesIndex !== undefined && seriesIndex !== null) {
+            if (!Number.isInteger(seriesIndex) || seriesIndex < 0 || !this.scanSeries[seriesIndex]) {
+                throw new RecurringSearchError("invalid_series", "移動する定期会議を選択してください。");
+            }
+            series = this.scanSeries[seriesIndex];
+            if (!series.identified) {
+                throw new RecurringSearchError("unidentified_series", "この定期会議を安全に識別できないため、移動先を計算できません。");
+            }
+        }
+        return {
+            scanId: this.scan.id,
+            seriesIndex: series ? seriesIndex : null,
+            retainedOccurrences: series?.retainedOccurrences || 0,
+            ...findRecurringSlots(this.scanIndex, this.scanDays, this.scanSettings, {
+                from: this.scan.from,
+                until: this.scan.until,
+                recurrence,
+                durationMinutes,
+                holidays: this.scanHolidays,
+                excludedKeys: new Set(series?.movableKeys || []),
+            }),
+        };
     }
 }
 

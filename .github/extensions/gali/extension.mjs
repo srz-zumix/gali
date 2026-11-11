@@ -22,7 +22,8 @@ import { listCalendars, GaliError } from "./gali.mjs";
 import { formatMinutes } from "./freebusy.mjs";
 import { MAX_PRESET_NAME_LENGTH, PRESET_ID_PATTERN, PresetError, presetStore } from "./presets.mjs";
 import { normalizeProfile, PROFILE_PATTERN, settingsFileFor } from "./store.mjs";
-import { CalendarOrderError, getProfileState, todayISO } from "./state.mjs";
+import { CalendarOrderError, RecurringSearchError, getProfileState, todayISO } from "./state.mjs";
+import { RECURRENCES } from "./recurring.mjs";
 import { startServer } from "./server.mjs";
 
 const VIEWS = ["day", "3days", "week"];
@@ -204,6 +205,7 @@ function buildHint(scan) {
 function summarizeScan(state, { limit }) {
     const scan = requireScan(state);
     return {
+        scanId: scan.id,
         range: { from: scan.from, until: scan.until, weeks: scan.weeks, weekdaysOnly: scan.weekdaysOnly },
         durationMinutes: scan.durationMinutes,
         scannedSlots: scan.scannedSlots,
@@ -211,6 +213,7 @@ function summarizeScan(state, { limit }) {
         candidates: scan.candidates.slice(0, limit),
         holidays: scan.holidays,
         calendars: scan.calendars,
+        recurringMeetings: scan.recurringMeetings.map((meeting, index) => ({ index, ...meeting })),
         hint: buildHint(scan),
     };
 }
@@ -527,6 +530,43 @@ const canvas = createCanvas({
                 requireCalendars(state);
                 await state.scanAvailability(input, { force: Boolean(input.force) });
                 return summarizeScan(state, { limit: input.limit || 20 });
+            },
+        },
+        {
+            name: "find_recurring_slots",
+            description:
+                "Evaluate recurring meeting times in an existing scan. Optionally select a recurring meeting by its index from find_slots to find a relocation, excluding only that identified series. Results cover the scanned dates only and include conflicts and unchecked dates.",
+            inputSchema: {
+                type: "object",
+                additionalProperties: false,
+                required: ["scanId", "recurrence", "durationMinutes"],
+                properties: {
+                    scanId: { type: "string", description: "Exact scanId returned by find_slots." },
+                    recurrence: { type: "string", enum: RECURRENCES },
+                    durationMinutes: { type: "integer", minimum: 15, maximum: 480 },
+                    seriesIndex: { type: "integer", minimum: 0, description: "Optional index from find_slots recurringMeetings. Omit for a new meeting." },
+                    conflictsOnly: { type: "boolean", description: "Return only candidates with at least one conflicting occurrence." },
+                    limit: { type: "integer", minimum: 1, maximum: 100 },
+                },
+            },
+            handler: async (ctx) => {
+                const state = await stateFor(ctx);
+                const input = ctx.input || {};
+                try {
+                    const result = state.findRecurring(input);
+                    const candidates = input.conflictsOnly
+                        ? result.candidates.filter((candidate) => candidate.busyCount > 0)
+                        : result.candidates;
+                    return {
+                        ...result,
+                        totalCandidates: result.candidates.length,
+                        matchingCandidates: candidates.length,
+                        candidates: candidates.slice(0, input.limit || 20),
+                    };
+                } catch (error) {
+                    if (error instanceof RecurringSearchError) throw new CanvasError(error.code, error.message);
+                    throw error;
+                }
             },
         },
         {
