@@ -91,8 +91,8 @@ export function busySegments(calendars, iso) {
 /** Slots inside the configured working hours where every calendar is free. */
 export function computeFreeSlots(snapshot, settings) {
     if (!snapshot) return [];
-    const workStart = parseTimeToMinutes(settings.workStart, 540);
-    const workEnd = parseTimeToMinutes(settings.workEnd, 1080);
+    const workStart = parseTimeToMinutes(settings.workStart, 600);
+    const workEnd = parseTimeToMinutes(settings.workEnd, 1140);
     if (workEnd <= workStart) return [];
     // A calendar we failed to read is not a calendar with no events: showing
     // the rest as "everyone is free" would invent availability.

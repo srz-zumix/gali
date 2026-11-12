@@ -98,22 +98,56 @@
                         <option value="4" selected>4週間</option>
                         <option value="6">6週間</option>
                         <option value="8">8週間</option>
+                        <option value="12">12週間</option>
+                    </select>
+                    <label for="scan-recurrence">繰り返し</label>
+                    <select id="scan-recurrence">
+                        <option value="once" selected>単発</option>
+                        <option value="weekly">毎週</option>
+                        <option value="biweekly">隔週</option>
+                        <option value="monthly-date">毎月（同じ日）</option>
+                        <option value="monthly-weekday">毎月（第何曜日）</option>
+                        <option value="monthly-last">毎月（最終曜日）</option>
                     </select>
                     <button type="button" id="scan-btn">候補を探す</button>
                     <button type="button" id="scan-force" title="キャッシュを使わず再取得">再取得して探す</button>
                 </div>
                 <p class="hint" id="scan-progress" hidden></p>
+                <p class="error" id="scan-error" role="alert" hidden></p>
 
                 <div class="adjust-tabs btn-group" id="adjust-tabs">
                     <button type="button" data-tab="candidates">候補</button>
                     <button type="button" data-tab="blockers">ボトルネック</button>
                     <button type="button" data-tab="shared">共有会議</button>
+                    <button type="button" data-tab="recurring">既存予定の移動</button>
                 </div>
 
                 <div class="adjust-body">
                     <div id="tab-candidates" class="tab-pane"></div>
                     <div id="tab-blockers" class="tab-pane" hidden></div>
                     <div id="tab-shared" class="tab-pane" hidden></div>
+                    <div id="tab-recurring" class="tab-pane" hidden>
+                        <p class="hint">スキャン範囲の既存の定期会議を仮に除いて移動先を探します。カレンダーの予定は変更しません。</p>
+                        <p class="hint" id="move-status" role="status"></p>
+                        <div id="move-controls" class="inline adjust-controls" hidden>
+                            <label for="move-series">移動する予定</label>
+                            <select id="move-series"></select>
+                            <label for="move-duration">移動後の長さ（分）</label>
+                            <input id="move-duration" type="number" min="15" max="480" step="1" />
+                            <label for="move-recurrence">繰り返し</label>
+                            <select id="move-recurrence">
+                                <option value="">選択してください</option>
+                                <option value="weekly">毎週</option>
+                                <option value="biweekly">隔週</option>
+                                <option value="monthly-date">毎月（同じ日）</option>
+                                <option value="monthly-weekday">毎月（第何曜日）</option>
+                                <option value="monthly-last">毎月（最終曜日）</option>
+                            </select>
+                            <button type="button" id="move-search">移動先を探す</button>
+                        </div>
+                        <p class="hint" id="move-hint"></p>
+                        <p class="error" id="move-error" role="alert" hidden></p>
+                    </div>
                 </div>
             </section>
 

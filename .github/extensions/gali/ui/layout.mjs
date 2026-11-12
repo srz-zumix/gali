@@ -12,8 +12,8 @@ export function computeGeometry(settings) {
         endHour: 24,
         startMinute: 0,
         height: 24 * HOUR_HEIGHT,
-        workStart: timeToMinutes(settings.workStart, 540),
-        workEnd: timeToMinutes(settings.workEnd, 1080),
+        workStart: timeToMinutes(settings.workStart, 600),
+        workEnd: timeToMinutes(settings.workEnd, 1140),
     };
 }
 

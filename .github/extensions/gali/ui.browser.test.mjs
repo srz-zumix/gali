@@ -141,7 +141,77 @@ function checkLayout() {
     return failures;
 }
 
-test("timed events remain distinct in the browser in normal and sharing modes", {
+function checkRecurringUi() {
+    const failures = [];
+    const check = (condition, message) => { if (!condition) failures.push(message); };
+    const data = {
+        revision: 1,
+        settings: {
+            calendars: [], refs: [], policyPatterns: [], workStart: "10:00", workEnd: "19:00",
+            slotMinutes: 30, scanWeeks: 4, shareMode: false,
+        },
+        snapshot: null,
+        range: { anchor: "2026-10-12", days: ["2026-10-12"] },
+        presets: [],
+        freeSlots: [],
+        scan: {
+            id: "synthetic-scan", fetchedAt: "2026-10-12T00:00:00Z",
+            from: "2026-10-12", until: "2026-11-08", durationMinutes: 30,
+            candidates: [], blockers: [], nearMiss: [], sharedMeetings: [], calendars: [],
+            recurringMeetings: [{
+                title: "SECRET_RECURRING", firstStart: "2026-10-12T10:00:00",
+                durations: [30], identified: true,
+            }],
+        },
+    };
+    apply(data);
+    document.getElementById("adjust").hidden = false;
+    document.getElementById("move-series").value = "0";
+    document.getElementById("move-series").dispatchEvent(new Event("change", { bubbles: true }));
+    check(document.getElementById("move-duration").value === "30", "relocation duration");
+    state.recurring = {
+        scanId: "synthetic-scan",
+        seriesIndex: 0,
+        result: {
+            scanId: "synthetic-scan", seriesIndex: 0, retainedOccurrences: 0,
+            from: data.scan.from, until: data.scan.until, recurrence: "weekly", durationMinutes: 30,
+            candidates: [
+                {
+                    pattern: { weekday: 1, anchor: "2026-10-12" }, start: "10:00", end: "10:30",
+                    expectedCount: 2, freeCount: 2, busyCount: 0, excludedCount: 0,
+                    occurrences: [{ day: "2026-10-12", status: "free" }, { day: "2026-10-19", status: "free" }],
+                },
+                {
+                    pattern: { weekday: 2, anchor: "2026-10-13" }, start: "10:00", end: "10:30",
+                    expectedCount: 2, freeCount: 1, busyCount: 1, excludedCount: 0,
+                    occurrences: [{ day: "2026-10-13", status: "free" }, { day: "2026-10-20", status: "busy", blockers: ["Alice"] }],
+                },
+            ],
+        },
+    };
+    renderAdjust(data);
+    check(document.querySelectorAll("#tab-candidates .candidate").length === 2, "recurring candidate rows");
+    const filter = document.querySelector('[data-recurring-filter="conflicts"]');
+    filter.focus();
+    filter.click();
+    check(document.querySelectorAll("#tab-candidates .candidate").length === 1, "conflict filter");
+    check(document.activeElement.matches('[data-recurring-filter="conflicts"]'), "conflict filter focus");
+    const detail = document.querySelector("#tab-candidates details");
+    detail.open = true;
+    check(detail.textContent.includes("2026-10-20") && detail.textContent.includes("予定あり"), "recurring conflict details");
+    check(!document.getElementById("move-controls").hidden, "relocation controls");
+    const panel = document.getElementById("adjust").getBoundingClientRect();
+    check([...document.querySelectorAll("#adjust-tabs button")].every((button) =>
+        button.getBoundingClientRect().right <= panel.right + 0.1), "adjust tabs overflow");
+    data.revision = 2;
+    data.settings.shareMode = true;
+    apply(data);
+    check(!document.getElementById("tab-candidates").textContent.includes("SECRET_RECURRING")
+        && !document.getElementById("move-series").textContent.includes("SECRET_RECURRING"), "recurring sharing privacy");
+    return failures;
+}
+
+test("event layout and recurring controls work in the browser in normal and sharing modes", {
     skip: !chrome && "Chrome or Chromium is unavailable; set CHROME_BIN to enable the browser test",
     timeout: 60_000,
 }, async () => {
@@ -154,7 +224,7 @@ test("timed events remain distinct in the browser in normal and sharing modes", 
         layout.replace(/^export /gm, ""),
         meetings.replace(/^export /gm, ""),
         app.replace(/^import .+ from "\.\/(?:layout|meetings)\.mjs";\r?\n/gm, ""),
-        `try { document.body.dataset.geometryResult = encodeURIComponent(JSON.stringify((${checkLayout})())); }
+        `try { document.body.dataset.geometryResult = encodeURIComponent(JSON.stringify([...(${checkLayout})(), ...(${checkRecurringUi})()])); }
          catch (error) { document.body.dataset.geometryResult = encodeURIComponent(JSON.stringify([String(error.stack || error)])); }`,
     ].join("\n");
     const html = index.replace('<link rel="stylesheet" href="/app.css" />', `<style>${css}\n#grid { width: 330px; }</style>`)

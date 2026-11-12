@@ -23,6 +23,9 @@ test("the time axis always covers all 24 hours", () => {
     const geometry = computeGeometry({ workStart: "13:30", workEnd: "16:15" });
     assert.equal(geometry.workStart, 810);
     assert.equal(geometry.workEnd, 975);
+    const defaultGeometry = computeGeometry({});
+    assert.equal(defaultGeometry.workStart, 600);
+    assert.equal(defaultGeometry.workEnd, 1140);
 });
 
 test("resizing is bounded by the minimum and available viewport height", () => {
@@ -48,6 +51,8 @@ test("viewport height persists per profile without changing working hours", asyn
     assert.equal(sanitizeSettings({ gridHeight: 50 }).gridHeight, MIN_GRID_HEIGHT);
     assert.equal(sanitizeSettings({ gridHeight: -10 }).gridHeight, 0);
     assert.equal(sanitizeSettings({ gridHeight: "invalid" }).gridHeight, 0);
+    assert.equal(sanitizeSettings({}).workStart, "10:00");
+    assert.equal(sanitizeSettings({}).workEnd, "19:00");
 
     await saveSettings("team-a", { gridHeight: 360, workStart: "10:00", workEnd: "19:00" });
     const saved = await loadSettings("team-a");
@@ -55,6 +60,10 @@ test("viewport height persists per profile without changing working hours", asyn
     assert.equal(saved.workStart, "10:00");
     assert.equal(saved.workEnd, "19:00");
     assert.equal((await loadSettings("team-b")).gridHeight, 0);
+    await saveSettings("team-legacy", { workStart: "09:00", workEnd: "18:00" });
+    const legacy = await loadSettings("team-legacy");
+    assert.equal(legacy.workStart, "09:00");
+    assert.equal(legacy.workEnd, "18:00");
     await saveSettings("team-a", { ...saved, gridHeight: 0 });
     assert.equal((await loadSettings("team-a")).gridHeight, 0);
 });

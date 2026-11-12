@@ -57,6 +57,7 @@ button[aria-pressed="true"] {
 input[type="text"],
 input[type="time"],
 input[type="date"],
+input[type="number"],
 select {
     background: transparent;
     border: 1px solid var(--gali-border);
@@ -974,6 +975,35 @@ table.cal tbody > tr.allday-row > td {
     font-size: var(--text-body-small, 12px);
 }
 
+#move-controls[hidden] {
+    display: none;
+}
+
+#move-series {
+    max-width: min(100%, 320px);
+}
+
+#move-duration {
+    width: 5em;
+}
+
+#move-error,
+#scan-error {
+    color: var(--true-color-red, #cf222e);
+    margin: 0;
+}
+
+.adjust-tabs.btn-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.adjust-tabs.btn-group button {
+    border-radius: 6px;
+    margin-left: 0;
+}
+
 .adjust-tabs button[aria-pressed="true"] {
     background: var(--gali-accent-soft, rgba(63, 126, 232, 0.16));
     font-weight: var(--font-weight-semibold, 600);
@@ -1042,6 +1072,19 @@ table.cal tbody > tr.allday-row > td {
 }
 
 .reasons {
+    margin: 4px 0 0;
+    padding-left: 18px;
+    color: var(--gali-muted);
+    font-size: var(--text-body-small, 12px);
+}
+
+.recurring-filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.recurring-occurrences {
     margin: 4px 0 0;
     padding-left: 18px;
     color: var(--gali-muted);

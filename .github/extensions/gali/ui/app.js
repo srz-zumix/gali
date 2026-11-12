@@ -19,6 +19,13 @@ const RESPONSE_LABELS = {
     tentative: "未定",
     needsAction: "未回答",
 };
+const RECURRENCE_LABELS = {
+    weekly: "毎週",
+    biweekly: "隔週",
+    "monthly-date": "毎月（同じ日）",
+    "monthly-weekday": "毎月（第何曜日）",
+    "monthly-last": "毎月（最終曜日）",
+};
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -27,6 +34,8 @@ const state = {
     presetBusy: false, calendarDrag: null, orderQueue: Promise.resolve(), orderFailures: 0,
     dateAnchor: null, datePending: null, dateCalendar: null,
     shareLatched: false, sharePending: false, shareFailure: null,
+    recurring: null, recurringRequest: 0, recurringFilter: "all", recurringVisible: 30,
+    scanRequest: 0, scanError: null, moveOptionsKey: null, moveOptionsScanId: null,
 };
 
 /* ---------------- helpers ---------------- */
@@ -659,6 +668,31 @@ function renderAllDay(event, calendar, settings, placement = {}) {
         >${renderSharedBadge(shared, calendar, sharing)}${escapeHtml(title)}${badge}</button>`;
 }
 
+function nowLineTop(geometry, date = new Date()) {
+    const minutes = date.getHours() * 60 + date.getMinutes() + date.getSeconds() / 60;
+    if (minutes < geometry.startMinute || minutes > geometry.endHour * 60) return null;
+    return ((minutes - geometry.startMinute) / 60) * HOUR_HEIGHT;
+}
+
+const NOW_LINE_INTERVAL_MS = 30 * 1000;
+
+// Move the existing current-time line in place so hover, focus and an open
+// popover survive; only a date change needs the grid to be rebuilt.
+function updateNowLine() {
+    const data = state.data;
+    if (!data?.snapshot || !data.settings) return;
+    const now = new Date();
+    if (state.nowDay !== undefined && localDate(now) !== state.nowDay) {
+        if (state.calendarDrag) return;
+        hidePopover();
+        renderGrid(data);
+        return;
+    }
+    const top = nowLineTop(computeGeometry(data.settings), now);
+    if (top === null) return;
+    for (const line of $("grid").querySelectorAll(".col .now")) line.style.top = `${top}px`;
+}
+
 function renderGrid(data) {
     const grid = $("grid");
     const snapshot = data.snapshot;
@@ -683,6 +717,7 @@ function renderGrid(data) {
 
     const days = snapshot.range.days;
     const today = localDate(new Date());
+    state.nowDay = today;
 
     const columns = [];
     for (const day of days) {
@@ -770,7 +805,7 @@ function renderGrid(data) {
         );
     }
 
-    const nowMinutes = new Date().getHours() * 60 + new Date().getMinutes();
+    const nowTop = nowLineTop(geometry);
     const bodyCells = columns
         .map((column, index) => {
             const lines = [];
@@ -784,8 +819,8 @@ function renderGrid(data) {
                     ? `<div class="work" style="top:${Math.max(0, workTop)}px;height:${workHeight}px"></div>`
                     : "";
             const now =
-                column.day === today && nowMinutes >= geometry.startMinute
-                    ? `<div class="now" style="top:${((nowMinutes - geometry.startMinute) / 60) * HOUR_HEIGHT}px"></div>`
+                column.day === today && nowTop !== null
+                    ? `<div class="now" style="top:${nowTop}px"></div>`
                     : "";
             const blocks = column.placed
                 .map((placed) => renderEventBlock(placed, column.calendar, geometry, settings))
@@ -990,10 +1025,84 @@ function renderScanProgress(data) {
     element.textContent = `${phase} ${progress.done}/${progress.total}${cached}`;
 }
 
+function recurrenceLabel(recurrence, pattern) {
+    if (recurrence === "monthly-date") return `毎月 ${pattern.monthDay}日`;
+    const weekday = WEEKDAYS[pattern.weekday];
+    if (recurrence === "monthly-weekday") return `毎月 第${pattern.ordinal}${weekday}曜日`;
+    if (recurrence === "monthly-last") return `毎月 最終${weekday}曜日`;
+    return `${RECURRENCE_LABELS[recurrence]} ${weekday}曜日`;
+}
+
+function recurringOccurrenceLabel(occurrence, sharing) {
+    if (occurrence.status === "free") return "空き";
+    if (occurrence.status === "busy") {
+        const names = occurrence.blockers?.length ? `（${occurrence.blockers.join("・")}）` : "";
+        return `予定あり${names}`;
+    }
+    if (occurrence.reason === "weekday") return "平日以外（未確認）";
+    if (occurrence.reason === "holiday") return "祝日（除外）";
+    if (occurrence.reason === "timezone") return "時刻変更のため未確認";
+    if (occurrence.reason === "policy" && !sharing) return "ノーミーティング枠（除外）";
+    return "対象外";
+}
+
+function renderRecurringCandidates(scan, sharing) {
+    const pane = $("tab-candidates");
+    const search = state.recurring;
+    if (search.pending) {
+        pane.innerHTML = '<p class="hint">繰り返し予定の候補を計算中…</p>';
+        return;
+    }
+    if (search.error) {
+        pane.innerHTML = `<p class="empty" role="alert">候補を計算できませんでした: ${escapeHtml(errorDetail(search.error, state.data?.settings))}</p>`;
+        return;
+    }
+    const result = search.result;
+    const selected = result.seriesIndex === null ? null : scan.recurringMeetings?.[result.seriesIndex];
+    const subject = selected ? (sharing ? "既存予定の移動先" : `「${selected.title}」の移動先`) : "新しい定期会議";
+    const conflicts = result.candidates.filter((candidate) => candidate.busyCount > 0);
+    const matches = state.recurringFilter === "conflicts" ? conflicts : result.candidates;
+    const rows = matches.slice(0, state.recurringVisible).map((candidate, position) => {
+        const label = recurrenceLabel(result.recurrence, candidate.pattern);
+        const checked = candidate.freeCount + candidate.busyCount;
+        const coverage = checked
+            ? `空き ${candidate.freeCount}/${candidate.expectedCount}回 / 衝突 ${candidate.busyCount}回 / 未確認・除外 ${candidate.excludedCount}回`
+            : `判定不可 / 未確認・除外 ${candidate.excludedCount}回`;
+        const occurrences = candidate.occurrences.map((occurrence) =>
+            `<li>${escapeHtml(occurrence.day)} ${escapeHtml(recurringOccurrenceLabel(occurrence, sharing))}</li>`).join("");
+        return `<li class="candidate${position === 0 ? " top" : ""}">
+            <div class="candidate-head">
+                <span class="candidate-when">${escapeHtml(label)} ${escapeHtml(candidate.start)}–${escapeHtml(candidate.end)}</span>
+                <span class="candidate-block">期間内の開始日 ${escapeHtml(candidate.pattern.anchor)} / ${escapeHtml(coverage)}</span>
+            </div>
+            <details><summary>各回を確認</summary><ul class="recurring-occurrences">${occurrences}</ul></details>
+        </li>`;
+    }).join("");
+    const retained = result.retainedOccurrences
+        ? `<p class="hint">${sharing ? "一部の予定は移動せず残して計算しています。" : "不在・ポリシー枠は移動せず残して計算しています。"}</p>`
+        : "";
+    const more = matches.length > state.recurringVisible
+        ? `<button type="button" data-recurring-more>さらに表示（${state.recurringVisible}/${matches.length}）</button>`
+        : "";
+    pane.innerHTML = `<p class="hint">${escapeHtml(subject)} / ${escapeHtml(result.from)} 〜 ${escapeHtml(result.until)} / ${result.durationMinutes}分</p>
+        <p class="hint">表示期間外は未確認です。未確認・除外日は空きに数えません。</p>
+        ${retained}
+        <div class="recurring-filters">
+            <button type="button" data-recurring-filter="all" aria-pressed="${state.recurringFilter === "all"}">すべて（${result.candidates.length}）</button>
+            <button type="button" data-recurring-filter="conflicts" aria-pressed="${state.recurringFilter === "conflicts"}">衝突あり（${conflicts.length}）</button>
+        </div>
+        ${rows ? `<ol class="candidates">${rows}</ol>` : '<p class="empty">該当する候補はありません。</p>'}
+        ${more}`;
+}
+
 function renderCandidates(scan, sharing = false) {
     const pane = $("tab-candidates");
     if (!scan) {
         pane.innerHTML = `<p class="hint">「候補を探す」で ${$("scan-weeks").value} 週間先まで全員の空きを探します。</p>`;
+        return;
+    }
+    if (state.recurring?.scanId === state.scanId) {
+        renderRecurringCandidates(scan, sharing);
         return;
     }
     const hints = sharing ? "" : (scan.hint || []).map((text) => `<li>${escapeHtml(text)}</li>`).join("");
@@ -1100,12 +1209,45 @@ function renderShared(scan, sharing = sharingMode()) {
     pane.innerHTML = `<ul class="shared">${rows}</ul>`;
 }
 
+function renderMoveControls(scan, sharing) {
+    const meetings = scan?.recurringMeetings || [];
+    const scanId = scan?.id || scan?.fetchedAt || null;
+    const key = JSON.stringify([scanId, sharing]);
+    if (key !== state.moveOptionsKey) {
+        const sameScan = scanId === state.moveOptionsScanId;
+        const previous = sameScan ? $("move-series").value : "";
+        $("move-series").innerHTML = `<option value="">選択してください</option>${meetings.map((meeting, index) => {
+            const title = sharing ? `予定 ${index + 1}` : `${index + 1}. ${meeting.title}`;
+            const when = String(meeting.firstStart || "").slice(0, 16).replace("T", " ");
+            return `<option value="${index}">${escapeHtml(`${title} / ${when}`)}</option>`;
+        }).join("")}`;
+        $("move-series").value = previous;
+        if (!sameScan) {
+            $("move-duration").value = "";
+            $("move-recurrence").value = "";
+            $("move-hint").textContent = "";
+            $("move-error").hidden = true;
+        }
+        state.moveOptionsKey = key;
+        state.moveOptionsScanId = scanId;
+    }
+    $("move-controls").hidden = meetings.length === 0;
+    $("move-status").textContent = !scan
+        ? "先に「候補を探す」でスキャンしてください。"
+        : meetings.length ? "" : "この期間に識別できる定期会議はありません。";
+}
+
 function renderAdjust(data) {
     const sharing = sharingMode(data.settings);
     renderScanProgress(data);
+    $("scan-error").hidden = !state.scanError;
+    $("scan-error").textContent = state.scanError
+        ? `候補を取得できませんでした: ${errorDetail(state.scanError, data.settings)}`
+        : "";
     renderCandidates(data.scan, sharing);
     renderBlockers(data.scan, sharing);
     renderShared(data.scan, sharing);
+    renderMoveControls(data.scan, sharing);
     const busy = Boolean(data.scanProgress);
     $("scan-btn").disabled = busy;
     $("scan-force").disabled = busy;
@@ -1152,10 +1294,12 @@ function apply(data) {
     // what-if results describe one specific scan (its duration, window and
     // participants). Keeping them across a new or invalidated scan would show a
     // stale "+N 枠" for a meeting whose key happens to be unchanged.
-    const scanId = data.scan ? data.scan.fetchedAt : null;
+    const scanId = data.scan ? (data.scan.id || data.scan.fetchedAt) : null;
     if (scanId !== state.scanId) {
         state.scanId = scanId;
         state.whatIf = new Map();
+        state.recurring = null;
+        state.recurringRequest += 1;
     }
     state.data = data;
     state.index = new Map();
@@ -1533,6 +1677,26 @@ document.addEventListener("click", (domEvent) => {
         selectTab(tab.dataset.tab);
         return;
     }
+    const filter = target.closest("[data-recurring-filter]");
+    if (filter) {
+        const restoreFocus = document.activeElement === filter;
+        state.recurringFilter = filter.dataset.recurringFilter;
+        state.recurringVisible = 30;
+        renderCandidates(state.data?.scan, sharingMode());
+        if (restoreFocus) $("tab-candidates").querySelector(`[data-recurring-filter="${state.recurringFilter}"]`)?.focus();
+        return;
+    }
+    const more = target.closest("[data-recurring-more]");
+    if (more) {
+        const restoreFocus = document.activeElement === more;
+        state.recurringVisible += 30;
+        renderCandidates(state.data?.scan, sharingMode());
+        if (restoreFocus) {
+            ($("tab-candidates").querySelector("[data-recurring-more]")
+                || $("tab-candidates").querySelector(`[data-recurring-filter="${state.recurringFilter}"]`))?.focus();
+        }
+        return;
+    }
     const whatIf = target.closest("[data-whatif]");
     if (whatIf) {
         runWhatIf(Number(whatIf.dataset.whatif));
@@ -1554,6 +1718,10 @@ document.addEventListener("keydown", (domEvent) => {
 // The popover is position:fixed, so it would detach from its event block on scroll.
 window.addEventListener("scroll", hidePopover, true);
 window.addEventListener("resize", hidePopover);
+setInterval(updateNowLine, NOW_LINE_INTERVAL_MS);
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "hidden") updateNowLine();
+});
 
 $("date-picker-toggle").addEventListener("click", openDateCalendar);
 $("date-calendar-close").addEventListener("click", () => $("date-calendar").close());
@@ -1667,9 +1835,83 @@ function selectTab(name) {
     for (const button of document.querySelectorAll("#adjust-tabs button")) {
         button.setAttribute("aria-pressed", String(button.dataset.tab === name));
     }
-    for (const id of ["candidates", "blockers", "shared"]) {
+    for (const id of ["candidates", "blockers", "shared", "recurring"]) {
         $(`tab-${id}`).hidden = id !== name;
     }
+}
+
+function clearRecurringSearch() {
+    state.recurringRequest += 1;
+    state.recurring = null;
+    renderCandidates(state.data?.scan, sharingMode());
+}
+
+async function requestRecurring({ recurrence, durationMinutes, seriesIndex = null }) {
+    const scanId = state.data?.scan?.id;
+    if (!scanId) return;
+    const request = ++state.recurringRequest;
+    state.recurring = { scanId, seriesIndex, pending: true };
+    state.recurringFilter = "all";
+    state.recurringVisible = 30;
+    renderCandidates(state.data.scan, sharingMode());
+    try {
+        const response = await fetch(withToken("/api/recurring"), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ scanId, recurrence, durationMinutes, seriesIndex }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+        if (!payload.recurring || payload.recurring.scanId !== scanId) throw new Error("スキャン結果を確認できませんでした。");
+        if (request !== state.recurringRequest || state.scanId !== scanId) return;
+        state.recurring = { scanId, seriesIndex, result: payload.recurring };
+    } catch (error) {
+        if (request !== state.recurringRequest || state.scanId !== scanId) return;
+        state.recurring = { scanId, seriesIndex, error };
+    }
+    renderCandidates(state.data?.scan, sharingMode());
+}
+
+function moveError(message) {
+    $("move-error").textContent = message;
+    $("move-error").hidden = !message;
+}
+
+function updateMoveSelection() {
+    if (state.recurring?.seriesIndex !== null && state.recurring?.seriesIndex !== undefined) clearRecurringSearch();
+    const value = $("move-series").value;
+    const meeting = /^\d+$/.test(value) ? state.data?.scan?.recurringMeetings?.[Number(value)] : null;
+    const durations = meeting?.durations || [];
+    $("move-duration").value = durations.length === 1 && Number.isInteger(durations[0])
+        && durations[0] >= 15 && durations[0] <= 480 ? String(durations[0]) : "";
+    $("move-hint").textContent = !meeting ? ""
+        : durations.length > 1 ? "回ごとに長さが異なります。移動後の長さを入力してください。"
+            : !durations.length ? "移動後の長さを入力してください。" : "";
+    moveError(meeting && !meeting.identified ? "この予定を安全に識別できないため、移動先を計算できません。" : "");
+}
+
+async function runMoveSearch() {
+    const value = $("move-series").value;
+    const seriesIndex = /^\d+$/.test(value) ? Number(value) : -1;
+    const meeting = state.data?.scan?.recurringMeetings?.[seriesIndex];
+    if (!meeting || !meeting.identified) {
+        moveError("移動する定期会議を選択してください。");
+        return;
+    }
+    const durationMinutes = Number($("move-duration").value);
+    if (!Number.isInteger(durationMinutes) || durationMinutes < 15 || durationMinutes > 480) {
+        moveError("移動後の長さを15〜480分で入力してください。");
+        return;
+    }
+    const recurrence = $("move-recurrence").value;
+    if (!RECURRENCE_LABELS[recurrence]) {
+        moveError("繰り返し周期を選択してください。");
+        return;
+    }
+    moveError("");
+    state.scanRequest += 1;
+    selectTab("candidates");
+    await requestRecurring({ recurrence, durationMinutes, seriesIndex });
 }
 
 async function runWhatIf(position) {
@@ -1700,17 +1942,54 @@ $("toggle-adjust").addEventListener("click", (domEvent) => {
     if (!panel.hidden && !document.querySelector('#adjust-tabs button[aria-pressed="true"]')) selectTab("candidates");
 });
 
-const runScan = (force) =>
-    post("/api/scan", {
-        durationMinutes: Number($("scan-duration").value),
-        weeks: Number($("scan-weeks").value),
-        force,
-    });
+async function runScan(force) {
+    const request = ++state.scanRequest;
+    const recurrence = $("scan-recurrence").value || "once";
+    if (recurrence !== "once") selectTab("candidates");
+    clearRecurringSearch();
+    state.scanError = null;
+    if (state.data) renderAdjust(state.data);
+    try {
+        const payload = await post("/api/scan", {
+            durationMinutes: Number($("scan-duration").value),
+            weeks: Number($("scan-weeks").value),
+            force,
+        });
+        if (request !== state.scanRequest || !payload.scan || payload.scan.id !== state.scanId) return;
+        if (recurrence !== "once") {
+            await requestRecurring({ recurrence, durationMinutes: payload.scan.durationMinutes });
+        }
+    } catch (error) {
+        if (request !== state.scanRequest) return;
+        state.scanError = error;
+        if (state.data) renderAdjust(state.data);
+    }
+}
 
 $("scan-btn").addEventListener("click", () => runScan(false));
 $("scan-force").addEventListener("click", () => runScan(true));
-$("scan-duration").addEventListener("change", (e) => patchSettings({ slotMinutes: Number(e.target.value) }, false));
-$("scan-weeks").addEventListener("change", (e) => patchSettings({ scanWeeks: Number(e.target.value) }, false));
+$("scan-recurrence").addEventListener("change", () => {
+    state.scanRequest += 1;
+    clearRecurringSearch();
+});
+$("move-series").addEventListener("change", updateMoveSelection);
+for (const id of ["move-duration", "move-recurrence"]) {
+    $(id).addEventListener(id === "move-duration" ? "input" : "change", () => {
+        moveError("");
+        if (state.recurring?.seriesIndex !== null && state.recurring?.seriesIndex !== undefined) clearRecurringSearch();
+    });
+}
+$("move-search").addEventListener("click", runMoveSearch);
+$("scan-duration").addEventListener("change", (e) => {
+    state.scanRequest += 1;
+    clearRecurringSearch();
+    return patchSettings({ slotMinutes: Number(e.target.value) }, false);
+});
+$("scan-weeks").addEventListener("change", (e) => {
+    state.scanRequest += 1;
+    clearRecurringSearch();
+    return patchSettings({ scanWeeks: Number(e.target.value) }, false);
+});
 $("skip-holidays").addEventListener("change", (e) => patchSettings({ skipHolidays: e.target.checked }, false));
 $("skip-policy").addEventListener("change", (e) => patchSettings({ skipPolicySlots: e.target.checked }, false));
 $("away-busy").addEventListener("change", (e) => patchSettings({ treatAwayAsBusy: e.target.checked }, false));

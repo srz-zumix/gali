@@ -15,6 +15,7 @@
 import { AWAY, MEETING, POLICY, classifyEvent } from "./classify.mjs";
 import { clipToDay, isBusyEvent, parseTimeToMinutes } from "./freebusy.mjs";
 import { eventKey } from "./ui/meetings.mjs";
+import { findRecurringSeries } from "./series.mjs";
 
 const DAY_MS = 86_400_000;
 
@@ -70,8 +71,8 @@ export function enumerateDays(since, until, { weekdaysOnly = true } = {}) {
  * Doing this once keeps the slot loop and the what-if simulation cheap.
  */
 export function buildIndex(calendars, days, settings) {
-    const workStart = parseTimeToMinutes(settings.workStart, 540);
-    const workEnd = parseTimeToMinutes(settings.workEnd, 1080);
+    const workStart = parseTimeToMinutes(settings.workStart, 600);
+    const workEnd = parseTimeToMinutes(settings.workEnd, 1140);
     const options = {
         workStart,
         workEnd,
@@ -101,12 +102,26 @@ export function buildIndex(calendars, days, settings) {
                     end: event.end,
                     durationMinutes: event.durationMinutes,
                     recurring: event.recurring,
+                    seriesAliases: new Set(),
+                    weakIdentity: false,
+                    missingIdentity: false,
                     attendees: new Set(),
                     kind: MEETING,
                 });
             }
             const meeting = meetings.get(key);
             meeting.attendees.add(calendar.id);
+            meeting.weakIdentity ||= !event.uid || event.uid === event.id;
+            meeting.missingIdentity ||= !event.uid && !event.id;
+            if (event.recurring) {
+                meeting.recurring = true;
+                if (event.uid && event.uid !== event.id) {
+                    meeting.seriesAliases.add(JSON.stringify(["uid", event.uid]));
+                }
+                if (event.recurringEventId) {
+                    meeting.seriesAliases.add(JSON.stringify(["calendar", calendar.id, event.recurringEventId]));
+                }
+            }
             if (event.detailsVisible && !meeting.detailsVisible) {
                 meeting.title = event.summary;
                 meeting.detailsVisible = true;
@@ -160,14 +175,13 @@ function stepFor(durationMinutes) {
  * Walk every candidate start time and record who blocks it.
  * `excludedKeys` powers the what-if simulation without a refetch.
  */
-export function scanSlots(index, days, settings, { durationMinutes, holidays, excludedKeys = new Set() } = {}) {
+export function scanSlots(index, days, settings, { durationMinutes, holidays, excludedKeys = new Set(), now = new Date() } = {}) {
     const { byDay, meetings, workStart, workEnd } = index;
     const step = stepFor(durationMinutes);
     const slots = [];
     // A scan is about future availability: proposing 09:00 today at 16:00 is
     // worse than useless, because ranking puts it first. `includePast` opts a
     // deliberately historical scan back in.
-    const now = new Date();
     const cutoffDay = settings.includePast ? null : toISODate(now);
     const cutoffMinutes = now.getHours() * 60 + now.getMinutes();
 
@@ -370,17 +384,15 @@ export function analyzeBlockers(slots, calendars) {
     };
 }
 
-/** Meetings that more than one of the watched calendars attends, grouped by title. */
-/**
- * Google gives every instance of a recurring series a UID of
- * `<series>_R<timestamp>@google.com`; strip the suffix to recover the series.
- */
-function seriesId(uid) {
-    return String(uid || "").replace(/_R\d{8}T\d{6}(?=@|$)/, "");
-}
-
+/** Meetings that more than one of the watched calendars attends. */
 export function findSharedMeetings(index, { minAttendees = 2 } = {}) {
     const groups = new Map();
+    const seriesByKey = new Map();
+    findRecurringSeries(index).forEach((group, position) => {
+        if (group.identified) {
+            for (const key of group.movableKeys) seriesByKey.set(key, position);
+        }
+    });
     for (const meeting of index.meetings.values()) {
         if (meeting.attendees.size < minAttendees) continue;
         // Away/policy blocks are shared too, but they are not reschedulable:
@@ -388,9 +400,11 @@ export function findSharedMeetings(index, { minAttendees = 2 } = {}) {
         // "frees up" a whole day.
         if (meeting.kind !== MEETING) continue;
         const attendees = [...meeting.attendees].sort();
-        // Group by series, not by title: two different private meetings both
-        // render as "（詳細非公開）" and must not collapse into one row.
-        const groupKey = `${seriesId(meeting.uid)}\u0000${attendees.join(",")}`;
+        // Ambiguous series remain separate occurrences rather than making an
+        // unrelated event disappear during what-if simulations.
+        const identity = seriesByKey.has(meeting.key)
+            ? ["series", seriesByKey.get(meeting.key)] : ["occurrence", meeting.key];
+        const groupKey = JSON.stringify([identity, attendees]);
         if (!groups.has(groupKey)) {
             groups.set(groupKey, {
                 title: meeting.detailsVisible ? meeting.title : "（詳細非公開）",

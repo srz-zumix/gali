@@ -35,8 +35,8 @@ export const DEFAULT_SETTINGS = {
     showDeclined: false,
     showCompletionDiff: true,
     shareMode: false,
-    workStart: "09:00",
-    workEnd: "18:00",
+    workStart: "10:00",
+    workEnd: "19:00",
     showFreeSlots: true,
     gridHeight: 0,
     // Availability scan.

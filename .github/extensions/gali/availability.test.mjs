@@ -53,13 +53,22 @@ test("declined events do not block availability even when displayed", () => {
 
 test("showing declined events leaves common free slots unchanged", () => {
     const snapshot = { calendars: [calendar], range: { days: [DAY] } };
-    const hidden = computeFreeSlots(snapshot, { ...DEFAULT_SETTINGS, showDeclined: false });
-    const shown = computeFreeSlots(snapshot, { ...DEFAULT_SETTINGS, showDeclined: true });
+    const settings = { ...DEFAULT_SETTINGS, workStart: "09:00", workEnd: "18:00" };
+    const hidden = computeFreeSlots(snapshot, { ...settings, showDeclined: false });
+    const shown = computeFreeSlots(snapshot, { ...settings, showDeclined: true });
     assert.deepEqual(shown, hidden);
     assert.deepEqual(shown, [{
         day: DAY,
         slots: [[540, 600], [660, 900], [1020, 1080]],
     }]);
+});
+
+test("missing work hours default to 10:00–19:00 in availability calculations", () => {
+    const snapshot = { calendars: [{ id: "owner", events: [] }], range: { days: [DAY] } };
+    assert.deepEqual(computeFreeSlots(snapshot, {}), [{ day: DAY, slots: [[600, 1140]] }]);
+    const index = buildIndex(snapshot.calendars, [DAY], {});
+    assert.equal(index.workStart, 600);
+    assert.equal(index.workEnd, 1140);
 });
 
 test("availability scans ignore declined events independently of the display toggle", () => {
