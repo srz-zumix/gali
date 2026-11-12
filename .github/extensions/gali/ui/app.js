@@ -1955,7 +1955,7 @@ async function runScan(force) {
             weeks: Number($("scan-weeks").value),
             force,
         });
-        if (request !== state.scanRequest || !payload.scan || payload.error || payload.scan.id !== state.scanId) return;
+        if (request !== state.scanRequest || !payload.scan || payload.scan.id !== state.scanId) return;
         if (recurrence !== "once") {
             await requestRecurring({ recurrence, durationMinutes: payload.scan.durationMinutes });
         }
