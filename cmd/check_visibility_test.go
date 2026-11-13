@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -37,6 +38,20 @@ func TestCheckVisibilityNoTargetsDoesNotAuthenticate(t *testing.T) {
 	}
 	if len(report.Visible) != 0 || len(report.NotVisible) != 0 || len(report.Undetermined) != 0 || len(report.UnresolvedGroups) != 0 {
 		t.Fatalf("unexpected empty-target report: %#v", report)
+	}
+	var output struct {
+		Counts map[string]int `json:"counts"`
+	}
+	if err := json.Unmarshal([]byte(stdout.String()), &output); err != nil {
+		t.Fatal(err)
+	}
+	if len(output.Counts) != 4 {
+		t.Fatalf("counts = %v, want four zero counts", output.Counts)
+	}
+	for _, status := range []string{"visible", "not_visible", "undetermined", "unresolved_groups"} {
+		if count, ok := output.Counts[status]; !ok || count != 0 {
+			t.Fatalf("counts = %v, want zero for %s", output.Counts, status)
+		}
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
@@ -124,6 +139,9 @@ func TestCheckVisibilityWritesPartialJSONAndReturnsError(t *testing.T) {
 	}
 	if len(report.UnresolvedGroups) != 0 {
 		t.Fatalf("unexpected report categories: %#v", report)
+	}
+	if want := (visibilityCounts{Visible: 4, NotVisible: 2, Undetermined: 2}); report.Counts != want {
+		t.Fatalf("counts = %#v, want %#v", report.Counts, want)
 	}
 	if strings.Contains(stdout.String(), err.Error()) {
 		t.Fatalf("error text contaminated JSON output: %q", stdout.String())
@@ -291,6 +309,79 @@ func TestCheckVisibilityFiltersRolesAndKeepsFailures(t *testing.T) {
 				len(report.UnresolvedGroups) != 1 || report.UnresolvedGroups[0].Group != "team@example.com" {
 				t.Fatalf("filtered out failures: %#v", report)
 			}
+			wantCounts := visibilityCounts{
+				Visible: len(tt.wantVisible), NotVisible: len(tt.wantHidden), Undetermined: 2, UnresolvedGroups: 1,
+			}
+			if report.Counts != wantCounts {
+				t.Fatalf("counts = %#v, want %#v", report.Counts, wantCounts)
+			}
+		})
+	}
+
+	resultEmails := func(results []visibilityResult) []string {
+		emails := make([]string, len(results))
+		for i, result := range results {
+			emails[i] = result.Email
+		}
+		return emails
+	}
+	for _, tt := range []struct {
+		name         string
+		filterArgs   []string
+		visible      []string
+		notVisible   []string
+		undetermined []string
+		unresolved   []string
+	}{
+		{"visible only", []string{"--status", "visible"}, []string{"alice@example.com", "bob@example.com"}, nil, nil, nil},
+		{"not visible only", []string{"--status", "not_visible"}, nil, []string{"carol@example.com"}, nil, nil},
+		{"unresolved groups only", []string{"--status", "unresolved_groups"}, nil, nil, nil, []string{"team@example.com"}},
+		{"failures only", []string{"--status", "undetermined", "--status", "unresolved_groups"}, nil, nil, []string{"dave@example.com", "eve@example.com"}, []string{"team@example.com"}},
+		{"exclude failures", []string{"--exclude-status", "undetermined", "--exclude-status", "unresolved_groups"}, []string{"alice@example.com", "bob@example.com"}, []string{"carol@example.com"}, nil, nil},
+		{"include and exclude", []string{"--status", "visible", "--status", "undetermined", "--exclude-status", "not_visible"}, []string{"alice@example.com", "bob@example.com"}, nil, []string{"dave@example.com", "eve@example.com"}, nil},
+		{"role and status", []string{"--role", "reader", "--status", "visible", "--status", "undetermined"}, []string{"alice@example.com"}, nil, []string{"dave@example.com", "eve@example.com"}, nil},
+		{"exclude all", []string{"--exclude-status", "visible", "--exclude-status", "not_visible", "--exclude-status", "undetermined", "--exclude-status", "unresolved_groups"}, nil, nil, nil, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := newCheckVisibilityCmd(getServices)
+			var stdout, stderr strings.Builder
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&stderr)
+			args := []string{
+				"--attendee", "alice@example.com", "--attendee", "bob@example.com",
+				"--attendee", "carol@example.com", "--attendee", "dave@example.com",
+				"--attendee", "eve@example.com", "--group", "team@example.com",
+				"--format", "json",
+			}
+			cmd.SetArgs(append(args, tt.filterArgs...))
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "2 undetermined calendars and 1 unresolved groups") {
+				t.Fatalf("expected unfiltered failure counts, got %v", err)
+			}
+			var report visibilityReport
+			if err := json.Unmarshal([]byte(stdout.String()), &report); err != nil {
+				t.Fatalf("invalid JSON %q: %v", stdout.String(), err)
+			}
+			if report.Visible == nil || report.NotVisible == nil || report.Undetermined == nil || report.UnresolvedGroups == nil {
+				t.Fatalf("expected arrays for all result categories: %s", stdout.String())
+			}
+			unresolved := make([]string, len(report.UnresolvedGroups))
+			for i, group := range report.UnresolvedGroups {
+				unresolved[i] = group.Group
+			}
+			if !slices.Equal(resultEmails(report.Visible), tt.visible) ||
+				!slices.Equal(resultEmails(report.NotVisible), tt.notVisible) ||
+				!slices.Equal(resultEmails(report.Undetermined), tt.undetermined) ||
+				!slices.Equal(unresolved, tt.unresolved) {
+				t.Fatalf("unexpected filtered results: %#v", report)
+			}
+			wantCounts := visibilityCounts{
+				Visible: len(tt.visible), NotVisible: len(tt.notVisible),
+				Undetermined: len(tt.undetermined), UnresolvedGroups: len(tt.unresolved),
+			}
+			if report.Counts != wantCounts {
+				t.Fatalf("counts = %#v, want %#v", report.Counts, wantCounts)
+			}
 		})
 	}
 
@@ -311,8 +402,50 @@ func TestCheckVisibilityFiltersRolesAndKeepsFailures(t *testing.T) {
 				t.Fatalf("output %q does not contain %q", stdout.String(), want)
 			}
 		}
+		for _, want := range []string{"Visible (1):", "Not visible (0):", "Undetermined (1):", "Unresolved groups (1):"} {
+			if !strings.Contains(stdout.String(), want) {
+				t.Fatalf("output %q does not contain %q", stdout.String(), want)
+			}
+		}
 		if strings.Contains(stdout.String(), "bob@example.com") {
 			t.Fatalf("output includes excluded role: %q", stdout.String())
+		}
+	})
+
+	t.Run("status filter text output", func(t *testing.T) {
+		cmd := newCheckVisibilityCmd(getServices)
+		var stdout, stderr strings.Builder
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+		cmd.SetArgs([]string{
+			"--attendee", "alice@example.com", "--attendee", "bob@example.com",
+			"--attendee", "eve@example.com", "--group", "team@example.com",
+			"--status", "visible", "--exclude-role", "writer",
+		})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "1 undetermined calendars and 1 unresolved groups") {
+			t.Fatalf("expected hidden failures to remain errors, got %v", err)
+		}
+		if want := "Visible (1):\n  alice@example.com (reader)\n"; stdout.String() != want {
+			t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+		}
+	})
+
+	t.Run("unresolved groups text output", func(t *testing.T) {
+		cmd := newCheckVisibilityCmd(getServices)
+		var stdout, stderr strings.Builder
+		cmd.SetOut(&stdout)
+		cmd.SetErr(&stderr)
+		cmd.SetArgs([]string{
+			"--attendee", "alice@example.com", "--group", "team@example.com",
+			"--status", "unresolved_groups",
+		})
+		if err := cmd.Execute(); err == nil {
+			t.Fatal("expected unresolved group error")
+		}
+		if !strings.HasPrefix(stdout.String(), "Unresolved groups (1):\n  team@example.com ") ||
+			strings.Contains(stdout.String(), "Visible (") {
+			t.Fatalf("unexpected output %q", stdout.String())
 		}
 	})
 }
@@ -362,12 +495,62 @@ func TestCheckVisibilityConflictingRoleFilters(t *testing.T) {
 	}
 }
 
-func TestCheckVisibilityRoleFilterNoMatchesSucceeds(t *testing.T) {
+func TestCheckVisibilityStatusFilterValidation(t *testing.T) {
+	for _, flag := range []string{"--status", "--exclude-status"} {
+		for _, status := range []string{"invalid", "", "Visible"} {
+			t.Run(flag+"/"+status, func(t *testing.T) {
+				cmd := newCheckVisibilityCmd(func(context.Context, bool, io.Writer) (*calendar.Service, *cloudidentity.Service, error) {
+					t.Fatal("authentication called for invalid status")
+					return nil, nil, nil
+				})
+				var stdout strings.Builder
+				cmd.SetOut(&stdout)
+				cmd.SetArgs([]string{flag, status, "--format", "json"})
+				if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "invalid "+flag) {
+					t.Fatalf("expected invalid %s error, got %v", flag, err)
+				}
+				if stdout.Len() != 0 {
+					t.Fatalf("stdout = %q, want empty", stdout.String())
+				}
+			})
+		}
+	}
+}
+
+func TestCheckVisibilityConflictingStatusFilters(t *testing.T) {
+	for _, args := range [][]string{
+		{"--status", "visible", "--exclude-status", "visible"},
+		{"--exclude-status", "undetermined", "--status", "visible", "--status", "undetermined"},
+	} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			cmd := newCheckVisibilityCmd(func(context.Context, bool, io.Writer) (*calendar.Service, *cloudidentity.Service, error) {
+				t.Fatal("authentication called for conflicting statuses")
+				return nil, nil, nil
+			})
+			var stdout strings.Builder
+			cmd.SetOut(&stdout)
+			cmd.SetArgs(append(args, "--attendee", "alice@example.com", "--format", "json"))
+			if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "both --status and --exclude-status") {
+				t.Fatalf("expected conflicting status error, got %v", err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q, want empty", stdout.String())
+			}
+		})
+	}
+}
+
+func TestCheckVisibilityFilterNoMatchesSucceeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"accessRole":"reader"}`)
 	}))
 	defer server.Close()
-	for _, filter := range [][]string{{"--role", "writer"}, {"--exclude-role", "reader"}} {
+	for _, filter := range [][]string{
+		{"--role", "writer"},
+		{"--exclude-role", "reader"},
+		{"--status", "not_visible"},
+		{"--exclude-status", "visible"},
+	} {
 		t.Run(filter[0], func(t *testing.T) {
 			cmd := newCheckVisibilityCmd(func(context.Context, bool, io.Writer) (*calendar.Service, *cloudidentity.Service, error) {
 				service, err := calendar.New(&http.Client{})

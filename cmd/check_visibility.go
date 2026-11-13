@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/mail"
+	"slices"
 	"sort"
 	"strings"
 
@@ -26,11 +27,19 @@ type unresolvedGroupResult struct {
 	Reason string `json:"reason"`
 }
 
+type visibilityCounts struct {
+	Visible          int `json:"visible"`
+	NotVisible       int `json:"not_visible"`
+	Undetermined     int `json:"undetermined"`
+	UnresolvedGroups int `json:"unresolved_groups"`
+}
+
 type visibilityReport struct {
 	Visible          []visibilityResult      `json:"visible"`
 	NotVisible       []visibilityResult      `json:"not_visible"`
 	Undetermined     []visibilityResult      `json:"undetermined"`
 	UnresolvedGroups []unresolvedGroupResult `json:"unresolved_groups"`
+	Counts           visibilityCounts        `json:"counts"`
 }
 
 type visibilityServiceGetter func(context.Context, bool, io.Writer) (*calendar.Service, *cloudidentity.Service, error)
@@ -40,8 +49,10 @@ func NewCheckVisibilityCmd() *cobra.Command {
 }
 
 func newCheckVisibilityCmd(getServices visibilityServiceGetter) *cobra.Command {
-	var attendees, groups, roles, excludedRoles []string
+	var attendees, groups, roles, excludedRoles, statuses, excludedStatuses []string
 	var outputFormat string
+	roleChoices := []string{"none", "freeBusyReader", "reader", "writerWithoutPrivateAccess", "writer", "owner"}
+	statusChoices := []string{"visible", "not_visible", "undetermined", "unresolved_groups"}
 
 	cmd := &cobra.Command{
 		Use:   "check-visibility",
@@ -56,11 +67,11 @@ inspect event details or determine whether a calendar is publicly shared.`,
 			if outputFormat != "" && outputFormat != "json" {
 				return fmt.Errorf("unsupported output format %q (expected json or empty)", outputFormat)
 			}
-			roleFilter, err := parseRoleFilter("--role", roles)
+			roleFilter, err := parseFilter("--role", roles, roleChoices)
 			if err != nil {
 				return err
 			}
-			excludeFilter, err := parseRoleFilter("--exclude-role", excludedRoles)
+			excludeFilter, err := parseFilter("--exclude-role", excludedRoles, roleChoices)
 			if err != nil {
 				return err
 			}
@@ -68,6 +79,23 @@ inspect event details or determine whether a calendar is publicly shared.`,
 				if roleFilter[role] {
 					return fmt.Errorf("access role %q cannot be specified in both --role and --exclude-role", role)
 				}
+			}
+			includeStatuses, err := parseFilter("--status", statuses, statusChoices)
+			if err != nil {
+				return err
+			}
+			excludeStatuses, err := parseFilter("--exclude-status", excludedStatuses, statusChoices)
+			if err != nil {
+				return err
+			}
+			for _, status := range excludedStatuses {
+				if includeStatuses[status] {
+					return fmt.Errorf("result status %q cannot be specified in both --status and --exclude-status", status)
+				}
+			}
+			selectedStatuses := make(map[string]bool, len(statusChoices))
+			for _, status := range statusChoices {
+				selectedStatuses[status] = (len(includeStatuses) == 0 || includeStatuses[status]) && !excludeStatuses[status]
 			}
 			attendees, err := normalizeEmails(attendees)
 			if err != nil {
@@ -80,7 +108,7 @@ inspect event details or determine whether a calendar is publicly shared.`,
 
 			report := emptyVisibilityReport()
 			if len(attendees) == 0 && len(groups) == 0 {
-				return writeVisibilityReport(cmd.OutOrStdout(), outputFormat, report)
+				return writeVisibilityReport(cmd.OutOrStdout(), outputFormat, report, selectedStatuses)
 			}
 
 			if len(groups) > 0 {
@@ -133,7 +161,7 @@ inspect event details or determine whether a calendar is publicly shared.`,
 			}
 
 			sortVisibilityReport(&report)
-			if err := writeVisibilityReport(cmd.OutOrStdout(), outputFormat, report); err != nil {
+			if err := writeVisibilityReport(cmd.OutOrStdout(), outputFormat, report, selectedStatuses); err != nil {
 				return err
 			}
 			if len(report.Undetermined) > 0 || len(report.UnresolvedGroups) > 0 {
@@ -146,19 +174,19 @@ inspect event details or determine whether a calendar is publicly shared.`,
 	cmd.Flags().StringArrayVar(&groups, "group", nil, "Google Workspace group to expand and check (repeatable)")
 	cmd.Flags().StringArrayVar(&roles, "role", nil, "Filter by access role: none, freeBusyReader, reader, writerWithoutPrivateAccess, writer, owner (repeatable)")
 	cmd.Flags().StringArrayVar(&excludedRoles, "exclude-role", nil, "Exclude access roles from results (repeatable)")
+	cmd.Flags().StringArrayVar(&statuses, "status", nil, "Filter by result status: visible, not_visible, undetermined, unresolved_groups (repeatable)")
+	cmd.Flags().StringArrayVar(&excludedStatuses, "exclude-status", nil, "Exclude result statuses (repeatable)")
 	cmd.Flags().StringVar(&outputFormat, "format", "", "Output format (json or empty for text)")
 	return cmd
 }
 
-func parseRoleFilter(flag string, roles []string) (map[string]bool, error) {
-	filter := make(map[string]bool, len(roles))
-	for _, role := range roles {
-		switch role {
-		case "none", "freeBusyReader", "reader", "writerWithoutPrivateAccess", "writer", "owner":
-			filter[role] = true
-		default:
-			return nil, fmt.Errorf("invalid %s %q (expected none, freeBusyReader, reader, writerWithoutPrivateAccess, writer, or owner)", flag, role)
+func parseFilter(flag string, values, choices []string) (map[string]bool, error) {
+	filter := make(map[string]bool, len(values))
+	for _, value := range values {
+		if !slices.Contains(choices, value) {
+			return nil, fmt.Errorf("invalid %s %q (expected %s, or %s)", flag, value, strings.Join(choices[:len(choices)-1], ", "), choices[len(choices)-1])
 		}
+		filter[value] = true
 	}
 	return filter, nil
 }
@@ -208,22 +236,45 @@ func sortVisibilityReport(report *visibilityReport) {
 	})
 }
 
-func writeVisibilityReport(output io.Writer, outputFormat string, report visibilityReport) error {
+func writeVisibilityReport(output io.Writer, outputFormat string, report visibilityReport, selectedStatuses map[string]bool) error {
 	if outputFormat == "json" {
-		if err := json.NewEncoder(output).Encode(report); err != nil {
+		filtered := emptyVisibilityReport()
+		if selectedStatuses["visible"] {
+			filtered.Visible = report.Visible
+		}
+		if selectedStatuses["not_visible"] {
+			filtered.NotVisible = report.NotVisible
+		}
+		if selectedStatuses["undetermined"] {
+			filtered.Undetermined = report.Undetermined
+		}
+		if selectedStatuses["unresolved_groups"] {
+			filtered.UnresolvedGroups = report.UnresolvedGroups
+		}
+		filtered.Counts = visibilityCounts{
+			Visible:          len(filtered.Visible),
+			NotVisible:       len(filtered.NotVisible),
+			Undetermined:     len(filtered.Undetermined),
+			UnresolvedGroups: len(filtered.UnresolvedGroups),
+		}
+		if err := json.NewEncoder(output).Encode(filtered); err != nil {
 			return fmt.Errorf("unable to encode visibility report: %w", err)
 		}
 		return nil
 	}
 	for _, section := range []struct {
+		status  string
 		title   string
 		results []visibilityResult
 	}{
-		{"Visible", report.Visible},
-		{"Not visible", report.NotVisible},
-		{"Undetermined", report.Undetermined},
+		{"visible", "Visible", report.Visible},
+		{"not_visible", "Not visible", report.NotVisible},
+		{"undetermined", "Undetermined", report.Undetermined},
 	} {
-		if _, err := fmt.Fprintf(output, "%s:\n", section.title); err != nil {
+		if !selectedStatuses[section.status] {
+			continue
+		}
+		if _, err := fmt.Fprintf(output, "%s (%d):\n", section.title, len(section.results)); err != nil {
 			return err
 		}
 		for _, result := range section.results {
@@ -247,12 +298,14 @@ func writeVisibilityReport(output io.Writer, outputFormat string, report visibil
 			}
 		}
 	}
-	if _, err := fmt.Fprintln(output, "Unresolved groups:"); err != nil {
-		return err
-	}
-	for _, group := range report.UnresolvedGroups {
-		if _, err := fmt.Fprintf(output, "  %s (%s)\n", group.Group, group.Reason); err != nil {
+	if selectedStatuses["unresolved_groups"] {
+		if _, err := fmt.Fprintf(output, "Unresolved groups (%d):\n", len(report.UnresolvedGroups)); err != nil {
 			return err
+		}
+		for _, group := range report.UnresolvedGroups {
+			if _, err := fmt.Fprintf(output, "  %s (%s)\n", group.Group, group.Reason); err != nil {
+				return err
+			}
 		}
 	}
 	return nil

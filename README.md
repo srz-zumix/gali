@@ -49,8 +49,8 @@ The email supplied is used as the calendar ID. Google says a primary calendar ID
 the user's primary email, but this is not guaranteed; aliases and account identity are not
 resolved. A result describes only the authenticated account's effective role on that calendar.
 It does not establish that the calendar is public, that a particular event exists or is visible,
-or how an event with `private` visibility behaves. Incomplete groups and undetermined calendars
-are included in the output, and cause a non-zero exit status. JSON output always includes
+or how an event with `private` visibility behaves. By default, incomplete groups and undetermined
+calendars are included in the output and cause a non-zero exit status. JSON output always includes
 `visible`, `not_visible`, `undetermined`, and `unresolved_groups` arrays.
 
 Use `--role` to show only results with the specified access roles. Repeat the flag to match
@@ -58,8 +58,21 @@ any of them, for example `--role reader --role writer`. Values are case-sensitiv
 `none`, `freeBusyReader`, `reader`, `writerWithoutPrivateAccess`, `writer`, and `owner`.
 Use `--exclude-role` to omit roles, for example `--exclude-role none --exclude-role freeBusyReader`.
 Both flags can be combined, but specifying the same role in both is an error.
-The filters apply only to the output: all targets are still checked, and undetermined calendars
-and unresolved groups are always reported and still cause a non-zero exit status.
+Role filters apply only to the output; undetermined calendars and unresolved groups are
+not filtered by role.
+
+Use `--status` and `--exclude-status` to include or exclude result categories:
+`visible`, `not_visible`, `undetermined`, or `unresolved_groups`. Both flags are repeatable;
+for example, `--status visible --status undetermined` or `--exclude-status not_visible`.
+Specifying the same status in both flags is an error. JSON retains all four arrays, with
+filtered categories empty; text output omits filtered headings.
+
+Each displayed status includes its count. JSON reports these in a `counts` object with the
+same four status keys; filtered categories have a count of zero. Counts reflect the displayed
+results after role and status filters, not the total number checked.
+
+All targets are still checked. Undetermined calendars and unresolved groups cause a non-zero
+exit status even if a status filter hides their details; the error reports their counts.
 
 ## Copilot canvas
 
