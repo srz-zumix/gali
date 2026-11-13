@@ -105,7 +105,7 @@ func (e *groupExpansion) expand(resourceName string) {
 	e.visited[resourceName] = true
 
 	group, err := e.service.Groups.Get(resourceName).
-		Fields("dynamicGroupMetadata.status").
+		Fields("dynamicGroupMetadata/status").
 		Context(e.ctx).
 		Do()
 	if err != nil {

@@ -81,8 +81,8 @@ func TestExpandGroupsPaginatesNestedGroupsAndDeduplicates(t *testing.T) {
 				http.NotFound(w, r)
 			}
 		case "/v1/groups/root":
-			if r.URL.Query().Get("fields") != "dynamicGroupMetadata.status" {
-				t.Errorf("group fields = %q, want dynamicGroupMetadata.status", r.URL.Query().Get("fields"))
+			if r.URL.Query().Get("fields") != "dynamicGroupMetadata/status" {
+				t.Errorf("group fields = %q, want dynamicGroupMetadata/status", r.URL.Query().Get("fields"))
 			}
 			_, _ = fmt.Fprint(w, `{"name":"groups/root"}`)
 		case "/v1/groups/nested":
@@ -144,8 +144,8 @@ func TestExpandGroupsKeepsMembersWhenDynamicGroupIsUpdating(t *testing.T) {
 		case "/v1/groups:lookup":
 			_, _ = fmt.Fprint(w, `{"name":"groups/dynamic"}`)
 		case "/v1/groups/dynamic":
-			if r.URL.Query().Get("fields") != "dynamicGroupMetadata.status" {
-				t.Errorf("group fields = %q, want dynamicGroupMetadata.status", r.URL.Query().Get("fields"))
+			if r.URL.Query().Get("fields") != "dynamicGroupMetadata/status" {
+				t.Errorf("group fields = %q, want dynamicGroupMetadata/status", r.URL.Query().Get("fields"))
 			}
 			_, _ = fmt.Fprint(w, `{"name":"groups/dynamic","dynamicGroupMetadata":{"status":{"status":"UPDATING_MEMBERSHIPS"}}}`)
 		case "/v1/groups/dynamic/memberships":
