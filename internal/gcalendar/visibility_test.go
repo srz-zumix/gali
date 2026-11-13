@@ -10,6 +10,7 @@ import (
 
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/cloudidentity/v1"
+	"google.golang.org/api/option"
 )
 
 func TestGetCalendarAccessRoleOnlyRequestsRole(t *testing.T) {
@@ -27,7 +28,7 @@ func TestGetCalendarAccessRoleOnlyRequestsRole(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service, err := calendar.New(&http.Client{})
+	service, err := calendar.NewService(context.Background(), option.WithHTTPClient(&http.Client{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,8 +69,8 @@ func TestNewVisibilityServicesRejectsMissingClient(t *testing.T) {
 func TestExpandGroupsPaginatesNestedGroupsAndDeduplicates(t *testing.T) {
 	var rootPages int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/v1/groups:lookup":
+		switch r.URL.Path {
+		case "/v1/groups:lookup":
 			switch r.URL.Query().Get("groupKey.id") {
 			case "team@example.com":
 				_, _ = fmt.Fprint(w, `{"name":"groups/root"}`)
@@ -79,14 +80,14 @@ func TestExpandGroupsPaginatesNestedGroupsAndDeduplicates(t *testing.T) {
 				t.Errorf("unexpected Cloud Identity request: %s %s", r.Method, r.URL.String())
 				http.NotFound(w, r)
 			}
-		case r.URL.Path == "/v1/groups/root":
+		case "/v1/groups/root":
 			if r.URL.Query().Get("fields") != "dynamicGroupMetadata.status" {
 				t.Errorf("group fields = %q, want dynamicGroupMetadata.status", r.URL.Query().Get("fields"))
 			}
 			_, _ = fmt.Fprint(w, `{"name":"groups/root"}`)
-		case r.URL.Path == "/v1/groups/nested":
+		case "/v1/groups/nested":
 			_, _ = fmt.Fprint(w, `{"name":"groups/nested"}`)
-		case r.URL.Path == "/v1/groups/root/memberships":
+		case "/v1/groups/root/memberships":
 			if r.URL.Query().Get("view") != "FULL" {
 				t.Errorf("view = %q, want FULL", r.URL.Query().Get("view"))
 			}
@@ -108,7 +109,7 @@ func TestExpandGroupsPaginatesNestedGroupsAndDeduplicates(t *testing.T) {
 			default:
 				http.Error(w, "unexpected page token", http.StatusBadRequest)
 			}
-		case r.URL.Path == "/v1/groups/nested/memberships":
+		case "/v1/groups/nested/memberships":
 			_, _ = fmt.Fprint(w, `{"memberships":[
 				{"type":"USER","preferredMemberKey":{"id":"bob@example.com"}},
 				{"type":"GROUP","preferredMemberKey":{"id":"team@example.com"}}
@@ -120,7 +121,7 @@ func TestExpandGroupsPaginatesNestedGroupsAndDeduplicates(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service, err := cloudidentity.New(&http.Client{})
+	service, err := cloudidentity.NewService(context.Background(), option.WithHTTPClient(&http.Client{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,15 +140,15 @@ func TestExpandGroupsPaginatesNestedGroupsAndDeduplicates(t *testing.T) {
 
 func TestExpandGroupsKeepsMembersWhenDynamicGroupIsUpdating(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/v1/groups:lookup":
+		switch r.URL.Path {
+		case "/v1/groups:lookup":
 			_, _ = fmt.Fprint(w, `{"name":"groups/dynamic"}`)
-		case r.URL.Path == "/v1/groups/dynamic":
+		case "/v1/groups/dynamic":
 			if r.URL.Query().Get("fields") != "dynamicGroupMetadata.status" {
 				t.Errorf("group fields = %q, want dynamicGroupMetadata.status", r.URL.Query().Get("fields"))
 			}
 			_, _ = fmt.Fprint(w, `{"name":"groups/dynamic","dynamicGroupMetadata":{"status":{"status":"UPDATING_MEMBERSHIPS"}}}`)
-		case r.URL.Path == "/v1/groups/dynamic/memberships":
+		case "/v1/groups/dynamic/memberships":
 			_, _ = fmt.Fprint(w, `{"memberships":[
 				{"type":"USER","preferredMemberKey":{"id":"alice@example.com"}}
 			]}`)
@@ -157,7 +158,7 @@ func TestExpandGroupsKeepsMembersWhenDynamicGroupIsUpdating(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service, err := cloudidentity.New(&http.Client{})
+	service, err := cloudidentity.NewService(context.Background(), option.WithHTTPClient(&http.Client{}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +191,7 @@ func TestExpandGroupsKeepsEarlierPagesAfterFailure(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service, err := cloudidentity.New(&http.Client{})
+	service, err := cloudidentity.NewService(context.Background(), option.WithHTTPClient(&http.Client{}))
 	if err != nil {
 		t.Fatal(err)
 	}

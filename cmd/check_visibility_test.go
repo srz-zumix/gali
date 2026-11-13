@@ -13,6 +13,7 @@ import (
 
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/cloudidentity/v1"
+	"google.golang.org/api/option"
 )
 
 func TestCheckVisibilityNoTargetsDoesNotAuthenticate(t *testing.T) {
@@ -91,7 +92,7 @@ func TestCheckVisibilityWritesPartialJSONAndReturnsError(t *testing.T) {
 		if includeGroups {
 			t.Fatal("unexpected group service request")
 		}
-		service, err := calendar.New(&http.Client{})
+		service, err := calendar.NewService(ctx, option.WithHTTPClient(&http.Client{}))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -182,12 +183,12 @@ func TestCheckVisibilityContinuesWhenGroupLookupFails(t *testing.T) {
 		if !includeGroups {
 			t.Fatal("group authentication was not requested")
 		}
-		calendarService, err := calendar.New(&http.Client{})
+		calendarService, err := calendar.NewService(ctx, option.WithHTTPClient(&http.Client{}))
 		if err != nil {
 			return nil, nil, err
 		}
 		calendarService.BasePath = server.URL + "/"
-		groupService, err := cloudidentity.New(&http.Client{})
+		groupService, err := cloudidentity.NewService(ctx, option.WithHTTPClient(&http.Client{}))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -224,30 +225,36 @@ func TestCheckVisibilityFiltersRolesAndKeepsFailures(t *testing.T) {
 			http.Error(w, `{"error":{"code":403,"message":"permission denied"}}`, http.StatusForbidden)
 			return
 		}
+		var response string
 		switch strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/calendars/"), "/events") {
 		case "alice@example.com":
-			fmt.Fprint(w, `{"accessRole":"reader"}`)
+			response = `{"accessRole":"reader"}`
 		case "bob@example.com":
-			fmt.Fprint(w, `{"accessRole":"writer"}`)
+			response = `{"accessRole":"writer"}`
 		case "carol@example.com":
-			fmt.Fprint(w, `{"accessRole":"freeBusyReader"}`)
+			response = `{"accessRole":"freeBusyReader"}`
 		case "dave@example.com":
-			fmt.Fprint(w, `{"accessRole":"unknownRole"}`)
+			response = `{"accessRole":"unknownRole"}`
 		case "eve@example.com":
 			http.Error(w, `{"error":{"code":404,"message":"not found"}}`, http.StatusNotFound)
+			return
 		default:
 			http.NotFound(w, r)
+			return
+		}
+		if _, err := fmt.Fprint(w, response); err != nil {
+			t.Errorf("writing response: %v", err)
 		}
 	}))
 	defer server.Close()
 
-	getServices := func(_ context.Context, _ bool, _ io.Writer) (*calendar.Service, *cloudidentity.Service, error) {
-		calendarService, err := calendar.New(&http.Client{})
+	getServices := func(ctx context.Context, _ bool, _ io.Writer) (*calendar.Service, *cloudidentity.Service, error) {
+		calendarService, err := calendar.NewService(ctx, option.WithHTTPClient(&http.Client{}))
 		if err != nil {
 			return nil, nil, err
 		}
 		calendarService.BasePath = server.URL + "/"
-		groupService, err := cloudidentity.New(&http.Client{})
+		groupService, err := cloudidentity.NewService(ctx, option.WithHTTPClient(&http.Client{}))
 		if err != nil {
 			return nil, nil, err
 		}
@@ -542,7 +549,9 @@ func TestCheckVisibilityConflictingStatusFilters(t *testing.T) {
 
 func TestCheckVisibilityFilterNoMatchesSucceeds(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"accessRole":"reader"}`)
+		if _, err := fmt.Fprint(w, `{"accessRole":"reader"}`); err != nil {
+			t.Errorf("writing response: %v", err)
+		}
 	}))
 	defer server.Close()
 	for _, filter := range [][]string{
@@ -552,8 +561,8 @@ func TestCheckVisibilityFilterNoMatchesSucceeds(t *testing.T) {
 		{"--exclude-status", "visible"},
 	} {
 		t.Run(filter[0], func(t *testing.T) {
-			cmd := newCheckVisibilityCmd(func(context.Context, bool, io.Writer) (*calendar.Service, *cloudidentity.Service, error) {
-				service, err := calendar.New(&http.Client{})
+			cmd := newCheckVisibilityCmd(func(ctx context.Context, _ bool, _ io.Writer) (*calendar.Service, *cloudidentity.Service, error) {
+				service, err := calendar.NewService(ctx, option.WithHTTPClient(&http.Client{}))
 				if err != nil {
 					return nil, nil, err
 				}

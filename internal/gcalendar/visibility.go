@@ -18,18 +18,17 @@ type UnresolvedGroup struct {
 }
 
 type groupExpansion struct {
-	ctx       context.Context
-	service   *cloudidentity.Service
-	emails    map[string]string
-	visited   map[string]bool
-	problems  []string
-	pageToken map[string]bool
+	ctx      context.Context
+	service  *cloudidentity.Service
+	emails   map[string]string
+	visited  map[string]bool
+	problems []string
 }
 
 // GetCalendarAccessRole retrieves only the effective role for the caller.
 func GetCalendarAccessRole(ctx context.Context, service *calendar.Service, calendarID string) (string, error) {
 	if service == nil {
-		return "", errors.New("Calendar service is unavailable")
+		return "", errors.New("calendar service is unavailable")
 	}
 	events, err := service.Events.List(calendarID).
 		Fields("accessRole").
@@ -40,7 +39,7 @@ func GetCalendarAccessRole(ctx context.Context, service *calendar.Service, calen
 		return "", err
 	}
 	if events == nil {
-		return "", errors.New("Calendar API returned an empty response")
+		return "", errors.New("calendar API returned an empty response")
 	}
 	return events.AccessRole, nil
 }
@@ -65,11 +64,10 @@ func ExpandGroups(ctx context.Context, service *cloudidentity.Service, groups []
 			continue
 		}
 		expansion := &groupExpansion{
-			ctx:       ctx,
-			service:   service,
-			emails:    members,
-			visited:   make(map[string]bool),
-			pageToken: make(map[string]bool),
+			ctx:     ctx,
+			service: service,
+			emails:  members,
+			visited: make(map[string]bool),
 		}
 		resource, err := service.Groups.Lookup().GroupKeyId(email).Context(ctx).Do()
 		if err != nil {
@@ -124,6 +122,7 @@ func (e *groupExpansion) expand(resourceName string) {
 	}
 
 	pageToken := ""
+	seenTokens := make(map[string]bool)
 	for {
 		call := e.service.Groups.Memberships.List(resourceName).
 			View("FULL").
@@ -147,11 +146,11 @@ func (e *groupExpansion) expand(resourceName string) {
 		if page.NextPageToken == "" {
 			return
 		}
-		if e.pageToken[page.NextPageToken] {
+		if seenTokens[page.NextPageToken] {
 			e.problems = append(e.problems, fmt.Sprintf("membership listing for %s repeated a page token", resourceName))
 			return
 		}
-		e.pageToken[page.NextPageToken] = true
+		seenTokens[page.NextPageToken] = true
 		pageToken = page.NextPageToken
 	}
 }
