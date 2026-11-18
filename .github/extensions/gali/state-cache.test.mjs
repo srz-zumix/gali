@@ -45,6 +45,36 @@ test("viewport fetch ownership and cached navigation", { timeout: 10000 }, async
         return state;
     }
 
+    await t.test("successful scans clear scan failures without masking display failures", async () => {
+        let mode = "ok";
+        const state = profile("scan-error-retry", async () => {
+            if (mode === "scan-error") throw new Error("scan unavailable");
+            if (mode === "display-error") return null;
+            return result("alice");
+        });
+        state.settings = sanitizeSettings({ ...state.settings, skipHolidays: false });
+        await state.refresh({ force: true });
+
+        mode = "scan-error";
+        await state.scanAvailability({ from: "2026-03-03", weeks: 1 }, { force: true });
+        assert.equal(state.scan, null);
+        assert.match(state.error, /scan unavailable/);
+
+        mode = "ok";
+        await state.scanAvailability({ from: "2026-03-03", weeks: 1 }, { force: true });
+        assert.ok(state.scan);
+        assert.equal(state.error, null);
+
+        mode = "display-error";
+        await state.refresh({ force: true });
+        const displayError = state.error;
+        assert.ok(displayError);
+        mode = "ok";
+        await state.scanAvailability({ from: "2026-03-03", weeks: 1 }, { force: true });
+        assert.ok(state.scan);
+        assert.equal(state.error, displayError);
+    });
+
     await t.test("week ranges begin on the selected day across calendar boundaries", () => {
         const cases = [
             [

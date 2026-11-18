@@ -66,6 +66,48 @@ setTimeout(() => {
     await state.refresh();
     await state.scanAvailability({ weeks: 1, from: "2026-11-02" }, { force: true });
 
+    await t.test("member confirmation checks the base inside the lock and fetches only confirmed members", async () => {
+        const finalMember = { id: "confirmed-member", label: "Confirmed" };
+        const members = await getProfileState("member-confirmation");
+        await members.updateSettings({
+            calendars: [alice], view: "day", anchor: "2026-11-02",
+        }, { refresh: false });
+        const server = await startServer({ profile: "member-confirmation", instanceId: "member-test" });
+        servers.push(server);
+        const url = new URL(server.url);
+        const request = async (body) => {
+            const response = await fetch(`${url.origin}/api/settings?token=${url.searchParams.get("token")}`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(body),
+            });
+            return { status: response.status, body: await response.json() };
+        };
+        const before = await calls();
+        const invalid = await request({ settings: { calendars: [bob] }, expectedCalendars: [null] });
+        assert.equal(invalid.status, 400);
+        assert.deepEqual(members.settings.calendars, [alice]);
+        const change = members.updateSettings({ calendars: [charlie] }, { refresh: false });
+        const stale = members.updateSettings({ calendars: [bob] }, { expectedCalendars: [alice] });
+        await change;
+        await assert.rejects(stale, { code: "calendar_members_changed" });
+        const conflict = await request({ settings: { calendars: [bob] }, expectedCalendars: [alice] });
+        assert.equal(conflict.status, 409);
+        assert.equal(conflict.body.code, "calendar_members_changed");
+        assert.deepEqual(members.settings.calendars, [charlie]);
+        assert.deepEqual((await loadSettings("member-confirmation")).calendars, [charlie]);
+        assert.deepEqual(await calls(), before);
+        const settingsChange = members.updateSettings({ workStart: "08:00" }, { refresh: false });
+        const confirmed = await request({ settings: { calendars: [finalMember] }, expectedCalendars: [charlie] });
+        await settingsChange;
+        assert.equal(confirmed.status, 200);
+        assert.deepEqual(confirmed.body.settings.calendars, [finalMember]);
+        assert.equal(confirmed.body.settings.workStart, "08:00");
+        assert.deepEqual(ids(confirmed.body.snapshot.calendars), ["confirmed-member"]);
+        assert.deepEqual((await loadSettings("member-confirmation")).calendars, [finalMember]);
+        assert.deepEqual(await calls(), [...before, "confirmed-member"]);
+    });
+
     await t.test("reorders cached results, preserves scans, and saves the ordered preset", async () => {
         const beforeCalls = await calls();
         const fetchedAt = state.snapshot.fetchedAt;

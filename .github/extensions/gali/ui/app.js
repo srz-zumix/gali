@@ -31,11 +31,15 @@ const $ = (id) => document.getElementById(id);
 const state = {
     data: null, index: new Map(), whatIf: new Map(), scanId: null,
     sharedEvents: new Map(), hoveredEvent: null, focusedEvent: null,
+    hoveredCandidate: null, focusedCandidate: null, restoringCandidateFocus: false, selectedCandidate: null,
     presetBusy: false, calendarDrag: null, orderQueue: Promise.resolve(), orderFailures: 0,
+    memberDraft: null, memberBusy: false, memberError: "",
     dateAnchor: null, datePending: null, dateCalendar: null,
     shareLatched: false, sharePending: false, shareFailure: null,
-    recurring: null, recurringRequest: 0, recurringFilter: "all", recurringVisible: 30,
-    scanRequest: 0, scanError: null, moveOptionsKey: null, moveOptionsScanId: null,
+    recurring: null, recurringRequest: 0, recurringFilter: "all", recurringVisible: 30, recurringSelection: null,
+    singleVisible: 30,
+    scanRequest: 0, activeScanRequest: null, scanError: null, moveOptionsKey: null, moveOptionsScanId: null,
+    renderedGridSnapshot: null,
 };
 
 /* ---------------- helpers ---------------- */
@@ -105,7 +109,10 @@ async function post(path, body) {
         body: JSON.stringify(body || {}),
     });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
+    if (!response.ok) {
+        if (payload.code === "calendar_members_changed") apply(payload);
+        throw new Error(payload.error || `HTTP ${response.status}`);
+    }
     apply(payload);
     return payload;
 }
@@ -285,10 +292,96 @@ function enqueueCalendarOperation(task) {
     return operation;
 }
 
+const memberSignature = (calendars) => JSON.stringify(calendars.map(({ id, label }) => [id, label || ""]));
+const selectedMembers = (data = state.data) => state.memberDraft?.calendars || data.settings.calendars;
+const memberConflict = () => state.memberDraft
+    && memberSignature(state.memberDraft.base) !== memberSignature(state.data.settings.calendars);
+
+function renderMembers() {
+    if (!state.data) return;
+    const pending = Boolean(state.memberDraft);
+    const conflict = memberConflict();
+    $("member-actions").hidden = !pending && !state.memberBusy;
+    $("confirm-members").disabled = !pending || state.memberBusy || Boolean(conflict);
+    $("cancel-members").disabled = state.memberBusy;
+    $("add-btn").disabled = state.memberBusy;
+    $("add-input").disabled = state.memberBusy;
+    $("member-message").hidden = !pending && !state.memberBusy;
+    $("member-message").textContent = state.memberBusy
+        ? "メンバーを確定して取得中…"
+        : "メンバーは未確定です。「確定して取得」で反映します。予定・空き探索は確定済みのメンバーが対象です。";
+    const error = conflict
+        ? "別の操作でメンバーが変更されました。「変更を取り消す」で最新のメンバーに戻してから変更してください。"
+        : state.memberError ? `${state.memberError.prefix}: ${errorDetail(state.memberError.error)}` : "";
+    $("member-error").hidden = !error;
+    $("member-error").textContent = error;
+    renderChips(state.data);
+    renderPresets(state.data);
+}
+
+function stageMembers(calendars) {
+    const unique = [...new Map(calendars.map((entry) => [entry.id, { ...entry }])).values()];
+    const base = state.memberDraft?.base || state.data.settings.calendars.map((entry) => ({ ...entry }));
+    state.memberDraft = memberSignature(unique) === memberSignature(state.data.settings.calendars)
+        ? null : { base, calendars: unique };
+    state.memberError = "";
+    calendarOrderMessage("");
+    renderMembers();
+}
+
+function editMembers(change) {
+    if (state.memberBusy || !state.data) return Promise.resolve();
+    return enqueueCalendarOperation(() => stageMembers(change(selectedMembers())));
+}
+
+async function confirmMembers() {
+    if (state.memberBusy || !state.memberDraft) return;
+    state.memberBusy = true;
+    state.memberError = "";
+    renderMembers();
+    try {
+        await enqueueCalendarOperation(async () => {
+            if (!state.memberDraft || memberConflict()) return;
+            const { calendars, base } = state.memberDraft;
+            const payload = await post("/api/settings", {
+                settings: { calendars }, expectedCalendars: base, refresh: true,
+            });
+            if (memberSignature(state.data.settings.calendars) !== memberSignature(calendars)) {
+                throw new Error(payload.error || "確定したメンバーを確認できませんでした。");
+            }
+        });
+    } catch (error) {
+        state.memberError = {
+            prefix: state.memberDraft ? "メンバーを確定できませんでした" : "メンバーは確定済みですが、取得結果を確認できませんでした",
+            error,
+        };
+    } finally {
+        state.memberBusy = false;
+        renderMembers();
+    }
+}
+
 function moveCalendar(input) {
+    if (state.memberBusy) return Promise.resolve();
     return enqueueCalendarOperation(async () => {
         calendarOrderMessage("");
         try {
+            if (state.memberDraft) {
+                const calendars = [...selectedMembers()];
+                const from = calendars.findIndex((entry) => entry.id === input.id);
+                if (from < 0) throw new Error("移動するカレンダーが見つかりません。");
+                const [moving] = calendars.splice(from, 1);
+                if (!input.direction && !calendars.some((entry) => entry.id === input.targetId)) {
+                    throw new Error("移動先のカレンダーが見つかりません。");
+                }
+                const target = input.direction
+                    ? from + (input.direction === "left" ? -1 : 1)
+                    : calendars.findIndex((entry) => entry.id === input.targetId) + (input.position === "after" ? 1 : 0);
+                if (target < 0 || target > calendars.length) return;
+                calendars.splice(target, 0, moving);
+                stageMembers(calendars);
+                return;
+            }
             await post("/api/calendars/move", input);
             const calendars = state.data.settings.calendars;
             const index = calendars.findIndex((entry) => entry.id === input.id);
@@ -313,6 +406,10 @@ function presetMessage(message, isError = false) {
 
 async function postPreset(path, body) {
     if (state.presetBusy) return null;
+    if (["/api/presets/create", "/api/presets/update"].includes(path) && (state.memberDraft || state.memberBusy)) {
+        presetMessage("メンバーを確定してから保存・更新してください。", true);
+        return null;
+    }
     state.presetBusy = true;
     presetMessage("");
     if (state.data) renderPresets(state.data);
@@ -321,6 +418,9 @@ async function postPreset(path, body) {
         const save = path === "/api/presets/create" || path === "/api/presets/update";
         const failures = state.orderFailures;
         const operation = () => {
+            if (save && state.memberDraft) {
+                throw new Error("メンバーを確定してから保存・更新してください。");
+            }
             if (save && state.orderFailures !== failures) {
                 throw new Error("直前の並び替えに失敗したため、保存を中止しました。");
             }
@@ -693,9 +793,137 @@ function updateNowLine() {
     for (const line of $("grid").querySelectorAll(".col .now")) line.style.top = `${top}px`;
 }
 
+function candidateMinutes(value) {
+    const match = /^([01]\d|2[0-4]):([0-5]\d)$/.exec(String(value || ""));
+    if (!match || (match[1] === "24" && match[2] !== "00")) return null;
+    return Number(match[1]) * 60 + Number(match[2]);
+}
+
+function candidateGridState(data) {
+    const empty = (kind) => ({ kind, days: new Map(), invalid: false });
+    if (state.activeScanRequest !== null || data?.scanProgress) return empty("scanning");
+    if (state.scanError) return empty("scan-error");
+    const scan = data?.scan;
+    if (!scan) return empty("no-scan");
+    if (data.loading || !data.snapshot) return empty("loading");
+    if (data.error) return empty("unavailable");
+
+    const members = new Set(data.settings.calendars.map((entry) => entry.id));
+    const matchesMembers = (calendars) => Array.isArray(calendars)
+        && calendars.length === members.size
+        && new Set(calendars.map((calendar) => calendar.id)).size === members.size
+        && calendars.every((calendar) => !calendar.error && members.has(calendar.id));
+    if (!members.size || !matchesMembers(scan.calendars) || !matchesMembers(data.snapshot.calendars)
+        || !Array.isArray(data.snapshot.range?.days)) return empty("unavailable");
+
+    const search = state.recurring?.scanId === (scan.id || scan.fetchedAt) ? state.recurring : null;
+    let entries;
+    let kind = "single";
+    let hypothetical = false;
+    if (search) {
+        if (search.pending) return empty("calculating");
+        if (search.error || !search.result) return empty("recurring-error");
+        const selectedIndex = search.result.candidates.indexOf(state.recurringSelection);
+        const selected = search.result.candidates[selectedIndex];
+        if (!selected) return empty("select-recurring");
+        kind = "recurring";
+        hypothetical = search.result.seriesIndex !== null && search.result.seriesIndex !== undefined;
+        entries = selected.occurrences.map(({ day, status }) => ({
+            day, status, start: selected.start, end: selected.end, key: `recurring-${selectedIndex}`,
+        }));
+    } else {
+        entries = scan.candidates.map(({ day, start, end }, index) => ({
+            day, start, end, status: "free", key: `single-${index}`,
+        }));
+    }
+
+    const visibleDays = new Set(data.snapshot.range.days);
+    const days = new Map();
+    let invalid = false;
+    for (const entry of entries) {
+        if (!visibleDays.has(entry.day)) continue;
+        const start = candidateMinutes(entry.start);
+        const end = candidateMinutes(entry.end);
+        if (start === null || end === null || start >= end
+            || !["free", "busy", "excluded"].includes(entry.status)
+            || entry.day < scan.from || entry.day > scan.until) {
+            invalid = true;
+            continue;
+        }
+        if (!days.has(entry.day)) days.set(entry.day, []);
+        days.get(entry.day).push({ start, end, status: entry.status, key: entry.key });
+    }
+    return { kind, days, invalid, hypothetical };
+}
+
+function candidateSlotMarkup(slots = []) {
+    const labels = { free: "候補", busy: "衝突", excluded: "未確認・除外" };
+    const active = activeCandidateKey();
+    const selected = selectedCandidateKey();
+    return slots.map(({ start, end, status, key }) => {
+        const top = (start / 60) * HOUR_HEIGHT;
+        const height = ((end - start) / 60) * HOUR_HEIGHT;
+        const single = /^single-(\d+)$/.exec(key);
+        const label = single ? `候補${Number(single[1]) + 1}` : labels[status];
+        const classes = `${key === selected ? " selected" : ""}${key === active ? " peer-highlight" : ""}`;
+        return `<div class="candidate-slot ${status}${classes}" data-candidate-key="${escapeHtml(key)}" style="top:${top}px;height:${height}px"><span>${escapeHtml(label)}</span></div>`;
+    }).join("");
+}
+
+function renderCandidateLayers(data) {
+    const visible = !$("adjust").hidden && state.renderedGridSnapshot === data?.snapshot;
+    const days = visible ? candidateGridState(data).days : new Map();
+    for (const layer of $("grid").querySelectorAll(".candidate-layer")) {
+        const markup = candidateSlotMarkup(days.get(layer.dataset.day));
+        if (layer.innerHTML !== markup) layer.innerHTML = markup;
+    }
+}
+
+function renderCandidateGridNote(data) {
+    const view = candidateGridState(data);
+    let message;
+    if (state.calendarDrag && state.renderedGridSnapshot !== data.snapshot) {
+        message = "並び替え中は候補枠を非表示にしています。";
+    } else if (view.kind === "scanning") {
+        message = "探索中はカレンダーの候補枠を非表示にしています。";
+    } else if (view.kind === "scan-error") {
+        message = "候補の取得に失敗したため、カレンダーの候補枠を非表示にしています。";
+    } else if (view.kind === "no-scan") {
+        message = "候補を探すと単発の候補をカレンダーに表示します。繰り返し候補は一覧で選択してください。";
+    } else if (view.kind === "loading") {
+        message = "カレンダーの取得中は候補枠を非表示にしています。";
+    } else if (view.kind === "unavailable") {
+        message = "表示中のカレンダーとスキャン対象を確認できないため、候補枠を表示できません。";
+    } else if (view.kind === "calculating") {
+        message = "繰り返し候補を計算中です。";
+    } else if (view.kind === "recurring-error") {
+        message = "繰り返し候補を表示できません。";
+    } else if (view.kind === "select-recurring") {
+        message = "一覧で「カレンダーに表示」を選ぶと、繰り返し候補の各回を表示します。";
+    } else {
+        message = view.kind === "single"
+            ? `緑の枠は表示期間内の全候補で、番号は一覧の順位です。枠や一覧をクリックすると選択（紫の囲み）します。${data.scan.candidates.length > state.singleVisible ? "一覧の「さらに表示」で残りも確認できます。" : ""}`
+            : "緑：空き／赤点線：衝突／灰色斜線：未確認・除外。";
+        const scannedAt = new Date(data.scan.fetchedAt);
+        const when = Number.isNaN(scannedAt.getTime()) ? "" : `${localDate(scannedAt)} ${pad2(scannedAt.getHours())}:${pad2(scannedAt.getMinutes())} の`;
+        message += ` 枠は確定済みの全メンバーをまとめた${when}スキャン時点の判定で、衝突は誰か1人以上の予定と重なることを示します。表示中の予定とは取得時刻が異なる場合があります。`;
+        if (view.hypothetical) message += " 移動元の予定を仮に除外した結果です。";
+        if (view.invalid) message += " 不正な候補データのため一部の枠を表示できません。";
+    }
+    const note = $("candidate-grid-note");
+    if (note.textContent !== message) note.textContent = message;
+}
+
+function updateCandidateDisplay() {
+    if (!state.data) return;
+    renderCandidateLayers(state.data);
+    renderCandidateGridNote(state.data);
+}
+
 function renderGrid(data) {
     const grid = $("grid");
     const snapshot = data.snapshot;
+    state.renderedGridSnapshot = snapshot || null;
     const settings = data.settings;
     const calendars = (snapshot?.calendars || []).map((calendar) => ({
         ...calendar,
@@ -708,10 +936,12 @@ function renderGrid(data) {
     if (!settings.calendars.length) {
         grid.innerHTML =
             '<p class="placeholder">「設定」から見たい人のカレンダー ID（メールアドレス）を追加してください。<br />gali が閲覧できる範囲の予定だけが表示されます。</p>';
+        refreshGridCandidateHover();
         return;
     }
     if (!snapshot) {
         grid.innerHTML = '<p class="placeholder">gali で予定を取得しています…</p>';
+        refreshGridCandidateHover();
         return;
     }
 
@@ -806,6 +1036,7 @@ function renderGrid(data) {
     }
 
     const nowTop = nowLineTop(geometry);
+    const candidateDays = $("adjust").hidden ? new Map() : candidateGridState(data).days;
     const bodyCells = columns
         .map((column, index) => {
             const lines = [];
@@ -825,7 +1056,11 @@ function renderGrid(data) {
             const blocks = column.placed
                 .map((placed) => renderEventBlock(placed, column.calendar, geometry, settings))
                 .join("");
-            return `<td class="${index % calendars.length === 0 ? "daystart" : ""}"><div class="col" style="height:${geometry.height}px">${work}${lines.join("")}${now}${blocks}</div></td>`;
+            const candidates = candidateSlotMarkup(candidateDays.get(column.day));
+            const first = index % calendars.length === 0;
+            const last = (index + 1) % calendars.length === 0;
+            const edges = `${first ? " group-start" : ""}${last ? " group-end" : ""}`;
+            return `<td class="${first ? "daystart" : ""}"><div class="col" style="height:${geometry.height}px">${work}${lines.join("")}${now}${blocks}<div class="candidate-layer${edges}" data-day="${escapeHtml(column.day)}" aria-hidden="true">${candidates}</div></div></td>`;
         })
         .join("");
 
@@ -851,6 +1086,7 @@ function renderGrid(data) {
     if (dayHeader) {
         document.documentElement.style.setProperty("--gali-day-head", `${Math.round(dayHeader.getBoundingClientRect().height)}px`);
     }
+    refreshGridCandidateHover();
 }
 
 /* ---------------- free slots ---------------- */
@@ -886,15 +1122,16 @@ function renderChips(data) {
     const focused = active?.dataset?.moveCalendar
         ? { id: active.dataset.moveCalendar, direction: active.dataset.direction }
         : null;
-    if (!data.settings.calendars.length) {
+    const calendars = selectedMembers(data);
+    if (!calendars.length) {
         chips.innerHTML = '<span class="empty">カレンダー未設定</span>';
         return;
     }
-    chips.innerHTML = data.settings.calendars
+    chips.innerHTML = calendars
         .map((entry, index, entries) => {
             const found = snapshot && snapshot.calendars.find((calendar) => calendar.id === entry.id);
             const color = found ? found.color : "var(--gali-muted)";
-            const label = (found && found.label) || entry.label || entry.id;
+            const label = entry.label || (found && found.label) || entry.id;
             let meta = "";
             if (found && found.error) meta = '<span class="meta error">取得エラー</span>';
             else if (found && !sharing) {
@@ -907,15 +1144,15 @@ function renderChips(data) {
             const controls = entries.length > 1
                 ? `<span class="chip-order">
                     <button type="button" data-move-calendar="${escapeHtml(entry.id)}" data-direction="left"
-                        aria-label="${escapeHtml(`${label}を左へ移動`)}" title="左へ移動" ${index === 0 ? "disabled" : ""}>←</button>
+                        aria-label="${escapeHtml(`${label}を左へ移動`)}" title="左へ移動" ${index === 0 || state.memberBusy ? "disabled" : ""}>←</button>
                     <button type="button" data-move-calendar="${escapeHtml(entry.id)}" data-direction="right"
-                        aria-label="${escapeHtml(`${label}を右へ移動`)}" title="右へ移動" ${index === entries.length - 1 ? "disabled" : ""}>→</button>
+                        aria-label="${escapeHtml(`${label}を右へ移動`)}" title="右へ移動" ${index === entries.length - 1 || state.memberBusy ? "disabled" : ""}>→</button>
                 </span>`
                 : "";
             return `<span class="chip" title="${escapeHtml(`${entry.id}${found && found.error ? `\n${errorDetail(found.error, data.settings)}` : ""}`)}">
                 <i class="dot" style="background:${color}"></i>
                 <span class="name">${escapeHtml(label)}</span>${meta}${controls}
-                <button type="button" data-remove="${escapeHtml(entry.id)}" title="削除">×</button>
+                <button type="button" data-remove="${escapeHtml(entry.id)}" title="削除" ${state.memberBusy ? "disabled" : ""}>×</button>
             </span>`;
         })
         .join("");
@@ -944,12 +1181,12 @@ function renderPresets(data) {
     const selected = presets.find((preset) => preset.id === select.value);
     if (!selected) $("preset-delete-confirm").hidden = true;
     select.disabled = state.presetBusy || !presets.length;
-    $("apply-preset").disabled = state.presetBusy || !selected;
-    $("update-preset").disabled = state.presetBusy || !selected || !data.settings.calendars.length;
+    $("apply-preset").disabled = state.presetBusy || state.memberBusy || !selected;
+    $("update-preset").disabled = state.presetBusy || state.memberBusy || Boolean(state.memberDraft) || !selected || !data.settings.calendars.length;
     $("delete-preset").disabled = state.presetBusy || !selected;
     $("confirm-delete-preset").disabled = state.presetBusy || !selected;
     $("refresh-presets").disabled = state.presetBusy;
-    $("save-preset").disabled = state.presetBusy || !data.settings.calendars.length || !$("preset-name").value.trim();
+    $("save-preset").disabled = state.presetBusy || state.memberBusy || Boolean(state.memberDraft) || !data.settings.calendars.length || !$("preset-name").value.trim();
     $("preset-summary").textContent = selected
         ? `${selected.name}: ${selected.calendars.map((entry) => entry.label || entry.id).join("、")}`
         : "プリセットを選択するとメンバーを確認できます。";
@@ -1060,20 +1297,24 @@ function renderRecurringCandidates(scan, sharing) {
     const result = search.result;
     const selected = result.seriesIndex === null ? null : scan.recurringMeetings?.[result.seriesIndex];
     const subject = selected ? (sharing ? "既存予定の移動先" : `「${selected.title}」の移動先`) : "新しい定期会議";
-    const conflicts = result.candidates.filter((candidate) => candidate.busyCount > 0);
-    const matches = state.recurringFilter === "conflicts" ? conflicts : result.candidates;
-    const rows = matches.slice(0, state.recurringVisible).map((candidate, position) => {
+    const indexed = result.candidates.map((candidate, index) => ({ candidate, index }));
+    const conflicts = indexed.filter(({ candidate }) => candidate.busyCount > 0);
+    const matches = state.recurringFilter === "conflicts" ? conflicts : indexed;
+    const rows = matches.slice(0, state.recurringVisible).map(({ candidate, index }, position) => {
         const label = recurrenceLabel(result.recurrence, candidate.pattern);
+        const selected = state.recurringSelection === candidate;
         const checked = candidate.freeCount + candidate.busyCount;
         const coverage = checked
             ? `空き ${candidate.freeCount}/${candidate.expectedCount}回 / 衝突 ${candidate.busyCount}回 / 未確認・除外 ${candidate.excludedCount}回`
             : `判定不可 / 未確認・除外 ${candidate.excludedCount}回`;
         const occurrences = candidate.occurrences.map((occurrence) =>
             `<li>${escapeHtml(occurrence.day)} ${escapeHtml(recurringOccurrenceLabel(occurrence, sharing))}</li>`).join("");
-        return `<li class="candidate${position === 0 ? " top" : ""}">
+        return `<li class="candidate${position === 0 ? " top" : ""}${selected ? " selected" : ""}" data-candidate-key="recurring-${index}"${selected ? ' aria-current="true"' : ""}>
             <div class="candidate-head">
                 <span class="candidate-when">${escapeHtml(label)} ${escapeHtml(candidate.start)}–${escapeHtml(candidate.end)}</span>
                 <span class="candidate-block">期間内の開始日 ${escapeHtml(candidate.pattern.anchor)} / ${escapeHtml(coverage)}</span>
+                <button type="button" data-recurring-select="${index}" data-recurring-request="${state.recurringRequest}" aria-pressed="${selected}"
+                    aria-label="${escapeHtml(`${label} ${candidate.start}–${candidate.end} をカレンダーに表示`)}">カレンダーに表示</button>
             </div>
             <details><summary>各回を確認</summary><ul class="recurring-occurrences">${occurrences}</ul></details>
         </li>`;
@@ -1096,25 +1337,38 @@ function renderRecurringCandidates(scan, sharing) {
 }
 
 function renderCandidates(scan, sharing = false) {
+    renderCandidateList(scan, sharing);
+    syncCandidateList();
+}
+
+function renderCandidateList(scan, sharing) {
     const pane = $("tab-candidates");
+    const listHover = state.hoveredCandidate?.source === "list" ? state.hoveredCandidate : null;
+    if (listHover) state.hoveredCandidate = null;
+    if (candidateListItem(document.activeElement)) state.focusedCandidate = null;
+    highlightCandidateSlots();
     if (!scan) {
         pane.innerHTML = `<p class="hint">「候補を探す」で ${$("scan-weeks").value} 週間先まで全員の空きを探します。</p>`;
+        refreshCandidateHover(listHover);
         return;
     }
     if (state.recurring?.scanId === state.scanId) {
         renderRecurringCandidates(scan, sharing);
+        refreshCandidateHover(listHover);
         return;
     }
     const hints = sharing ? "" : (scan.hint || []).map((text) => `<li>${escapeHtml(text)}</li>`).join("");
     if (!scan.candidates.length) {
         pane.innerHTML = `<p class="empty">${escapeHtml(scan.from)} 〜 ${escapeHtml(scan.until)} に ${scan.durationMinutes}分の空きはありません。</p>${hints ? `<ul class="notes">${hints}</ul>` : ""}`;
+        refreshCandidateHover(listHover);
         return;
     }
     const rows = scan.candidates
-        .slice(0, 30)
+        .slice(0, state.singleVisible)
         .map((candidate, position) => {
             const reasons = sharing ? "" : candidate.reasons.map((text) => `<li>${escapeHtml(text)}</li>`).join("");
-            return `<li class="candidate${position === 0 ? " top" : ""}">
+            const selected = state.selectedCandidate === `single-${position}`;
+            return `<li class="candidate${position === 0 ? " top" : ""}${selected ? " selected" : ""}" data-candidate-key="single-${position}" tabindex="0"${selected ? ' aria-current="true"' : ""}>
                 <div class="candidate-head">
                     <span class="candidate-when">${escapeHtml(formatDayLabel(candidate.day))} ${escapeHtml(candidate.start)}–${escapeHtml(candidate.end)}</span>
                     <span class="candidate-block">連続 ${candidate.blockMinutes}分</span>
@@ -1123,9 +1377,13 @@ function renderCandidates(scan, sharing = false) {
             </li>`;
         })
         .join("");
+    const more = scan.candidates.length > state.singleVisible
+        ? `<button type="button" data-single-more>さらに表示（${state.singleVisible}/${scan.candidates.length}）</button>`
+        : "";
     pane.innerHTML = `<p class="hint">${escapeHtml(scan.from)} 〜 ${escapeHtml(scan.until)} / ${scan.durationMinutes}分 / 全員空き ${scan.totalFreeSlots} 枠</p>
         ${hints ? `<ul class="notes">${hints}</ul>` : ""}
-        <ol class="candidates">${rows}</ol>`;
+        <ol class="candidates">${rows}</ol>${more}`;
+    refreshCandidateHover(listHover);
 }
 
 function renderBlockers(scan, sharing = false) {
@@ -1239,16 +1497,32 @@ function renderMoveControls(scan, sharing) {
 
 function renderAdjust(data) {
     const sharing = sharingMode(data.settings);
+    const active = document.activeElement;
+    const focusedCandidate = active?.dataset?.recurringRequest === String(state.recurringRequest)
+        ? active.dataset.recurringSelect : undefined;
+    const focusedRow = candidateListItem(active);
+    const focusedKey = focusedRow?.dataset.candidateKey === state.focusedCandidate
+        ? focusedRow.dataset.candidateKey : null;
+    const focusedSingle = active === focusedRow && focusedKey?.startsWith("single-") ? focusedKey : null;
+    const focusedSummary = active?.tagName === "SUMMARY" && focusedKey?.startsWith("recurring-") ? focusedKey : null;
     renderScanProgress(data);
     $("scan-error").hidden = !state.scanError;
     $("scan-error").textContent = state.scanError
         ? `候補を取得できませんでした: ${errorDetail(state.scanError, data.settings)}`
         : "";
     renderCandidates(data.scan, sharing);
+    if (focusedCandidate !== undefined) {
+        restoreCandidateFocus($("tab-candidates").querySelector(`[data-recurring-select="${Number(focusedCandidate)}"]`));
+    } else if (focusedSingle || focusedSummary) {
+        const key = focusedSingle || focusedSummary;
+        const row = $("tab-candidates").querySelector(`[data-candidate-key="${key}"]`);
+        restoreCandidateFocus(focusedSingle ? row : row?.querySelector("summary"));
+    }
     renderBlockers(data.scan, sharing);
     renderShared(data.scan, sharing);
     renderMoveControls(data.scan, sharing);
-    const busy = Boolean(data.scanProgress);
+    renderCandidateGridNote(data);
+    const busy = Boolean(data.scanProgress || state.activeScanRequest !== null);
     $("scan-btn").disabled = busy;
     $("scan-force").disabled = busy;
 }
@@ -1297,11 +1571,18 @@ function apply(data) {
     const scanId = data.scan ? (data.scan.id || data.scan.fetchedAt) : null;
     if (scanId !== state.scanId) {
         state.scanId = scanId;
+        if (scanId) state.scanError = null;
+        clearCandidateInteraction();
         state.whatIf = new Map();
         state.recurring = null;
+        state.recurringSelection = null;
         state.recurringRequest += 1;
+        state.singleVisible = 30;
     }
     state.data = data;
+    if (state.memberDraft && memberSignature(state.memberDraft.calendars) === memberSignature(data.settings.calendars)) {
+        state.memberDraft = null;
+    }
     state.index = new Map();
     for (const calendar of (data.snapshot && data.snapshot.calendars) || []) {
         for (const event of calendar.events) state.index.set(calendarEventKey(calendar.id, event.id), { calendar, event });
@@ -1311,10 +1592,11 @@ function apply(data) {
     renderDatePicker(data);
     renderSharing(data);
     renderSettings(data);
-    renderPresets(data);
-    if (!state.calendarDrag) renderChips(data);
+    if (!state.calendarDrag) renderMembers();
+    else renderPresets(data);
     renderStatus(data);
     if (!state.calendarDrag) renderGrid(data);
+    else renderCandidateLayers(data);
     renderFreeSlots(data);
     renderAdjust(data);
     renderGridHeight();
@@ -1535,7 +1817,132 @@ function highlightSharedEvents() {
     }
 }
 
+function candidateListItem(target) {
+    return target?.closest?.("#tab-candidates .candidate[data-candidate-key]") || null;
+}
+
+function activeCandidateKey() {
+    return state.hoveredCandidate?.key || state.focusedCandidate;
+}
+
+function selectedCandidateKey() {
+    const search = state.recurring;
+    if (search && search.scanId === state.scanId) {
+        const index = search.result?.candidates.indexOf(state.recurringSelection) ?? -1;
+        return index >= 0 ? `recurring-${index}` : null;
+    }
+    return state.selectedCandidate;
+}
+
+function revealCandidateRow(row) {
+    const container = row?.closest(".adjust-body");
+    if (!container || row.closest("[hidden]")) return;
+    const bounds = container.getBoundingClientRect();
+    const rect = row.getBoundingClientRect();
+    if (rect.top < bounds.top) container.scrollTop -= bounds.top - rect.top + 4;
+    else if (rect.bottom > bounds.bottom) container.scrollTop += Math.min(rect.bottom - bounds.bottom + 4, rect.top - bounds.top - 4);
+}
+
+function syncCandidateList() {
+    const key = activeCandidateKey();
+    for (const row of $("tab-candidates").querySelectorAll(".candidate[data-candidate-key]")) {
+        row.classList.toggle("peer-highlight", Boolean(key && row.dataset.candidateKey === key));
+    }
+}
+
+function highlightCandidateSlots() {
+    const key = activeCandidateKey();
+    for (const slot of $("grid").querySelectorAll(".candidate-slot")) {
+        slot.classList.toggle("peer-highlight", Boolean(key && slot.dataset.candidateKey === key));
+    }
+    syncCandidateList();
+}
+
+function setCandidateHover(key, source, point) {
+    if (state.hoveredCandidate?.key === key && state.hoveredCandidate?.source === source) {
+        state.hoveredCandidate.point = point;
+        return;
+    }
+    state.hoveredCandidate = key ? { key, source, point } : null;
+    highlightCandidateSlots();
+    if (key && source === "grid") {
+        revealCandidateRow($("tab-candidates").querySelector(`.candidate[data-candidate-key="${key}"]`));
+    }
+}
+
+function selectCandidate(key, { fromGrid = false } = {}) {
+    const match = /^(single|recurring)-(\d+)$/.exec(key || "");
+    if (!match || !state.data?.scan) return;
+    const index = Number(match[2]);
+    const pane = $("tab-candidates");
+    const restoreFocus = !fromGrid && candidateListItem(document.activeElement)?.dataset.candidateKey === key;
+    if (match[1] === "recurring") {
+        const search = state.recurring;
+        const candidate = search?.scanId === state.scanId ? search.result?.candidates[index] : null;
+        if (!candidate) return;
+        if (!fromGrid || state.recurringSelection !== candidate) {
+            state.recurringSelection = state.recurringSelection === candidate ? null : candidate;
+        }
+    } else {
+        if (state.recurring?.scanId === state.scanId || !state.data.scan.candidates[index]) return;
+        state.selectedCandidate = fromGrid || state.selectedCandidate !== key ? key : null;
+        if (index >= state.singleVisible) state.singleVisible = Math.ceil((index + 1) / 30) * 30;
+    }
+    renderCandidates(state.data.scan, sharingMode());
+    updateCandidateDisplay();
+    const row = pane.querySelector(`.candidate[data-candidate-key="${key}"]`);
+    if (restoreFocus) restoreCandidateFocus(row);
+    if (fromGrid) {
+        selectTab("candidates");
+        revealCandidateRow(row);
+    }
+}
+
+function clearCandidateInteraction() {
+    state.hoveredCandidate = null;
+    state.focusedCandidate = null;
+    state.selectedCandidate = null;
+}
+
 const gridEventTarget = (target) => target?.closest?.("#grid .ev") || null;
+
+function candidateKeyAtPoint(target, point) {
+    const column = target?.closest?.("#grid .col");
+    if (!column || gridEventTarget(target)) return null;
+    for (const slot of column.querySelectorAll(".candidate-slot")) {
+        const bounds = slot.getBoundingClientRect();
+        if (point.x >= bounds.left && point.x < bounds.right && point.y >= bounds.top && point.y < bounds.bottom) {
+            return slot.dataset.candidateKey;
+        }
+    }
+    return null;
+}
+
+function refreshCandidateHover(hover) {
+    if (!hover?.point) return;
+    const target = document.elementFromPoint(hover.point.x, hover.point.y);
+    const key = hover.source === "list" ? candidateListItem(target)?.dataset.candidateKey
+        : candidateKeyAtPoint(target, hover.point);
+    setCandidateHover(key || null, hover.source, hover.point);
+}
+
+function refreshGridCandidateHover() {
+    if (state.hoveredCandidate?.source === "grid") refreshCandidateHover(state.hoveredCandidate);
+}
+
+function restoreCandidateFocus(element) {
+    if (!element) return;
+    state.restoringCandidateFocus = true;
+    try {
+        element.focus();
+    } finally {
+        state.restoringCandidateFocus = false;
+    }
+    refreshCandidateHover(state.hoveredCandidate);
+}
+
+const pointerPoint = (event) => ({ x: event.clientX, y: event.clientY });
+
 for (const [type, field, leaving] of [
     ["pointerover", "hoveredEvent", false],
     ["pointerout", "hoveredEvent", true],
@@ -1551,6 +1958,45 @@ for (const [type, field, leaving] of [
         highlightSharedEvents();
     });
 }
+
+document.addEventListener("pointerover", (event) => {
+    const item = candidateListItem(event.target);
+    if (item) setCandidateHover(item.dataset.candidateKey, "list", pointerPoint(event));
+});
+document.addEventListener("pointerout", (event) => {
+    if (state.hoveredCandidate?.source !== "list" || !candidateListItem(event.target)) return;
+    const next = candidateListItem(event.relatedTarget);
+    setCandidateHover(next?.dataset.candidateKey || null, "list", pointerPoint(event));
+});
+$("tab-candidates").addEventListener("pointermove", (event) => {
+    const item = candidateListItem(event.target);
+    if (item) setCandidateHover(item.dataset.candidateKey, "list", pointerPoint(event));
+});
+for (const [type, leaving] of [["focusin", false], ["focusout", true]]) {
+    document.addEventListener(type, (event) => {
+        const item = candidateListItem(leaving ? event.relatedTarget : event.target);
+        const key = item?.dataset.candidateKey || null;
+        const clearHover = !leaving && !state.restoringCandidateFocus && state.hoveredCandidate;
+        const changed = state.focusedCandidate !== key || clearHover;
+        state.focusedCandidate = key;
+        if (clearHover) state.hoveredCandidate = null;
+        if (changed) highlightCandidateSlots();
+    });
+}
+$("grid").addEventListener("pointermove", (event) => {
+    const point = pointerPoint(event);
+    const key = candidateKeyAtPoint(event.target, point);
+    if (key || state.hoveredCandidate?.source === "grid") setCandidateHover(key, "grid", point);
+});
+$("grid").addEventListener("pointerleave", () => {
+    if (state.hoveredCandidate?.source === "grid") setCandidateHover(null, "grid");
+});
+const clearCandidateHover = () => {
+    if (state.hoveredCandidate) setCandidateHover(null, state.hoveredCandidate.source);
+};
+document.addEventListener("scroll", () => refreshCandidateHover(state.hoveredCandidate), true);
+document.addEventListener("pointercancel", clearCandidateHover);
+window.addEventListener("resize", () => refreshCandidateHover(state.hoveredCandidate));
 
 async function loadCalendarOptions() {
     try {
@@ -1568,6 +2014,7 @@ async function loadCalendarOptions() {
 }
 
 async function addCalendar() {
+    if (state.memberBusy || !state.data) return;
     const input = $("add-input");
     const submitted = input.value;
     const ids = submitted
@@ -1576,7 +2023,9 @@ async function addCalendar() {
         .filter(Boolean);
     if (!ids.length) return;
     try {
-        await enqueueCalendarOperation(() => post("/api/calendars/add", { calendars: ids }));
+        await editMembers((calendars) => [
+            ...calendars, ...ids.filter((id) => !calendars.some((entry) => entry.id === id)).map((id) => ({ id, label: "" })),
+        ]);
         if (input.value === submitted) input.value = "";
     } catch (error) {
         $("calendar-hint").textContent = `追加に失敗しました: ${errorDetail(error)}`;
@@ -1603,6 +2052,7 @@ function finishCalendarDrag() {
     if (state.data) {
         renderChips(state.data);
         renderGrid(state.data);
+        renderCandidateGridNote(state.data);
     }
 }
 
@@ -1614,6 +2064,10 @@ function calendarDropPosition(event, header) {
 document.addEventListener("dragstart", (event) => {
     const header = event.target.closest("#grid th[data-order-calendar]");
     if (!header || !event.dataTransfer) return;
+    if (state.memberBusy || state.memberDraft) {
+        event.preventDefault();
+        return;
+    }
     state.calendarDrag = { id: header.dataset.orderCalendar, source: header, target: null };
     header.classList.add("dragging");
     event.dataTransfer.effectAllowed = "move";
@@ -1667,7 +2121,7 @@ document.addEventListener("click", (domEvent) => {
     const remove = target.closest("[data-remove]");
     if (remove) {
         const id = remove.dataset.remove;
-        enqueueCalendarOperation(() => post("/api/calendars/remove", { calendars: [id] })).catch((error) => {
+        editMembers((calendars) => calendars.filter((entry) => entry.id !== id)).catch((error) => {
             calendarOrderMessage(`カレンダーを削除できませんでした: ${errorDetail(error)}`, true);
         });
         return;
@@ -1680,10 +2134,39 @@ document.addEventListener("click", (domEvent) => {
     const filter = target.closest("[data-recurring-filter]");
     if (filter) {
         const restoreFocus = document.activeElement === filter;
+        if (state.recurringFilter !== filter.dataset.recurringFilter) {
+            state.recurringSelection = null;
+            clearCandidateInteraction();
+        }
         state.recurringFilter = filter.dataset.recurringFilter;
         state.recurringVisible = 30;
         renderCandidates(state.data?.scan, sharingMode());
+        updateCandidateDisplay();
         if (restoreFocus) $("tab-candidates").querySelector(`[data-recurring-filter="${state.recurringFilter}"]`)?.focus();
+        return;
+    }
+    const recurringSelect = target.closest("[data-recurring-select]");
+    if (recurringSelect) {
+        const index = Number(recurringSelect.dataset.recurringSelect);
+        const search = state.recurring;
+        if (!Number.isInteger(index) || index < 0 || Number(recurringSelect.dataset.recurringRequest) !== state.recurringRequest
+            || search?.scanId !== state.scanId || !search.result?.candidates[index]) return;
+        const restoreFocus = document.activeElement === recurringSelect;
+        const candidate = search.result.candidates[index];
+        state.recurringSelection = state.recurringSelection === candidate ? null : candidate;
+        renderCandidates(state.data?.scan, sharingMode());
+        updateCandidateDisplay();
+        if (restoreFocus) $("tab-candidates").querySelector(`[data-recurring-select="${index}"]`)?.focus();
+        return;
+    }
+    const singleMore = target.closest("[data-single-more]");
+    if (singleMore) {
+        const restoreFocus = document.activeElement === singleMore;
+        const firstNew = state.singleVisible;
+        state.singleVisible += 30;
+        renderCandidates(state.data?.scan, sharingMode());
+        renderCandidateGridNote(state.data);
+        if (restoreFocus) $("tab-candidates").querySelectorAll(".candidate")[firstNew]?.focus();
         return;
     }
     const more = target.closest("[data-recurring-more]");
@@ -1702,6 +2185,17 @@ document.addEventListener("click", (domEvent) => {
         runWhatIf(Number(whatIf.dataset.whatif));
         return;
     }
+    const candidateRow = candidateListItem(target);
+    if (candidateRow && !target.closest("button, a, input, select, textarea, details")) {
+        selectCandidate(candidateRow.dataset.candidateKey);
+        return;
+    }
+    const gridCandidate = target.closest("#grid") ? candidateKeyAtPoint(target, pointerPoint(domEvent)) : null;
+    if (gridCandidate) {
+        hidePopover();
+        selectCandidate(gridCandidate, { fromGrid: true });
+        return;
+    }
     const block = target.closest(".ev");
     if (block) {
         domEvent.stopPropagation();
@@ -1713,6 +2207,11 @@ document.addEventListener("click", (domEvent) => {
 
 document.addEventListener("keydown", (domEvent) => {
     if (domEvent.key === "Escape") hidePopover();
+    const row = candidateListItem(domEvent.target);
+    if (row && row === domEvent.target && (domEvent.key === "Enter" || domEvent.key === " ")) {
+        domEvent.preventDefault();
+        selectCandidate(row.dataset.candidateKey);
+    }
 });
 
 // The popover is position:fixed, so it would detach from its event block on scroll.
@@ -1756,6 +2255,13 @@ $("date-calendar-days").addEventListener("keydown", (event) => {
 });
 
 $("refresh").addEventListener("click", () => post("/api/refresh", {}));
+$("confirm-members").addEventListener("click", confirmMembers);
+$("cancel-members").addEventListener("click", () => {
+    if (state.memberBusy) return;
+    state.memberDraft = null;
+    state.memberError = "";
+    renderMembers();
+});
 $("toggle-share").addEventListener("click", () => saveShareMode(!sharingMode()));
 $("retry-share-mode").addEventListener("click", () => {
     if (state.shareFailure) return saveShareMode(state.shareFailure.target);
@@ -1789,8 +2295,11 @@ $("save-preset").addEventListener("click", async () => {
 });
 
 $("apply-preset").addEventListener("click", async () => {
-    const result = await postPreset("/api/presets/apply", { id: $("preset-select").value });
-    if (result) presetMessage(`「${result.preset.name}」のメンバーに切り替えました。`);
+    if (state.memberBusy || state.presetBusy) return;
+    const preset = state.data?.presets?.find((entry) => entry.id === $("preset-select").value);
+    if (!preset) return;
+    await editMembers(() => preset.calendars);
+    presetMessage(`「${preset.name}」を選択しました。「確定して取得」で反映します。`);
 });
 
 $("update-preset").addEventListener("click", async () => {
@@ -1843,7 +2352,10 @@ function selectTab(name) {
 function clearRecurringSearch() {
     state.recurringRequest += 1;
     state.recurring = null;
+    state.recurringSelection = null;
+    clearCandidateInteraction();
     renderCandidates(state.data?.scan, sharingMode());
+    updateCandidateDisplay();
 }
 
 async function requestRecurring({ recurrence, durationMinutes, seriesIndex = null }) {
@@ -1851,9 +2363,12 @@ async function requestRecurring({ recurrence, durationMinutes, seriesIndex = nul
     if (!scanId) return;
     const request = ++state.recurringRequest;
     state.recurring = { scanId, seriesIndex, pending: true };
+    state.recurringSelection = null;
+    clearCandidateInteraction();
     state.recurringFilter = "all";
     state.recurringVisible = 30;
     renderCandidates(state.data.scan, sharingMode());
+    updateCandidateDisplay();
     try {
         const response = await fetch(withToken("/api/recurring"), {
             method: "POST",
@@ -1870,6 +2385,7 @@ async function requestRecurring({ recurrence, durationMinutes, seriesIndex = nul
         state.recurring = { scanId, seriesIndex, error };
     }
     renderCandidates(state.data?.scan, sharingMode());
+    updateCandidateDisplay();
 }
 
 function moveError(message) {
@@ -1938,12 +2454,15 @@ async function runWhatIf(position) {
 $("toggle-adjust").addEventListener("click", (domEvent) => {
     const panel = $("adjust");
     panel.hidden = !panel.hidden;
+    if (panel.hidden) clearCandidateInteraction();
     domEvent.currentTarget.setAttribute("aria-expanded", String(!panel.hidden));
     if (!panel.hidden && !document.querySelector('#adjust-tabs button[aria-pressed="true"]')) selectTab("candidates");
+    updateCandidateDisplay();
 });
 
 async function runScan(force) {
     const request = ++state.scanRequest;
+    state.activeScanRequest = request;
     const recurrence = $("scan-recurrence").value || "once";
     if (recurrence !== "once") selectTab("candidates");
     clearRecurringSearch();
@@ -1963,6 +2482,12 @@ async function runScan(force) {
         if (request !== state.scanRequest) return;
         state.scanError = error;
         if (state.data) renderAdjust(state.data);
+    } finally {
+        if (state.activeScanRequest === request) {
+            state.activeScanRequest = null;
+            if (state.data) renderAdjust(state.data);
+            updateCandidateDisplay();
+        }
     }
 }
 

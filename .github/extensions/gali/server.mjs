@@ -12,7 +12,7 @@ import path from "node:path";
 
 import { listCalendars, GaliError } from "./gali.mjs";
 import { PresetError, presetStore } from "./presets.mjs";
-import { CalendarOrderError, RecurringSearchError, getProfileState, shiftAnchor, todayISO } from "./state.mjs";
+import { CalendarMembersConflictError, CalendarOrderError, RecurringSearchError, getProfileState, shiftAnchor, todayISO } from "./state.mjs";
 
 const UI_DIR = path.dirname(fileURLToPath(new URL("./ui/index.html", import.meta.url)));
 
@@ -242,7 +242,15 @@ async function handleRequest(req, res, { profile, instanceId, token, port, strea
 
     try {
         if (route === "/api/settings") {
-            await state.updateSettings(body.settings || {}, { refresh: body.refresh !== false });
+            if (body.expectedCalendars !== undefined && (!Array.isArray(body.expectedCalendars)
+                || body.expectedCalendars.some((entry) => !entry || typeof entry.id !== "string"
+                    || typeof entry.label !== "string"))) {
+                sendJson(res, 400, { error: "確定前のメンバーを指定してください。" });
+                return;
+            }
+            await state.updateSettings(body.settings || {}, {
+                refresh: body.refresh !== false, expectedCalendars: body.expectedCalendars,
+            });
         } else if (route === "/api/calendars/add") {
             if (!Array.isArray(body.calendars) || !body.calendars.length
                 || body.calendars.some((id) => typeof id !== "string" || !id.trim())) {
@@ -308,6 +316,10 @@ async function handleRequest(req, res, { profile, instanceId, token, port, strea
         }
         sendJson(res, 200, state.toJSON());
     } catch (error) {
+        if (error instanceof CalendarMembersConflictError) {
+            sendJson(res, 409, { ...state.toJSON(), error: error.message, code: error.code });
+            return;
+        }
         sendJson(res, 200, { ...state.toJSON(), error: toMessage(error) });
     }
 }

@@ -85,6 +85,7 @@ function createRenderer({ now } = {}) {
                                 }
                                 return nowLines.lines;
                             }
+                            if (selector === ".candidate-slot" || selector === ".candidate[data-candidate-key]") return [];
                             return blocks.filter((block) => block.dataset.shared);
                         },
                         getBoundingClientRect() { return { width: 200, height: 100 }; },
@@ -131,6 +132,9 @@ function createRenderer({ now } = {}) {
         },
         data() {
             return new Script("state.data").runInContext(context);
+        },
+        candidateView() {
+            return new Script("candidateGridState(state.data)").runInContext(context);
         },
         eventMarkup(event, calendar, settings) {
             if (event.allDay) return context.renderAllDay(event, calendar, settings);
@@ -2338,6 +2342,231 @@ test("pointer and keyboard interaction highlights only the matching group", () =
     assert.deepEqual(renderer.highlighted(), []);
 });
 
+function removeMember(renderer, id) {
+    renderer.dispatch("click", {
+        dataset: { remove: id },
+        closest(selector) { return selector === "[data-remove]" ? this : null; },
+    });
+    return renderer.waitForOrder();
+}
+
+test("member additions, removals, presets and order changes fetch only once after confirmation", async () => {
+    const renderer = createRenderer();
+    const data = orderingData();
+    const base = structuredClone(data.settings.calendars);
+    data.presets = [{ id: "team", name: "Team", calendars: [base[1], base[0]] }];
+    renderer.apply(data);
+    const grid = renderer.element("grid").innerHTML;
+    const snapshot = renderer.data().snapshot;
+    const calls = [];
+    renderer.useFetch(async (url, options) => {
+        const body = JSON.parse(options.body);
+        calls.push({ route: new URL(url, "http://localhost").pathname, body });
+        return {
+            ok: true,
+            json: async () => ({
+                ...data, revision: 3, settings: { ...data.settings, ...body.settings }, snapshot: null,
+            }),
+        };
+    });
+    renderer.element("preset-select").value = "team";
+    await renderer.fire("apply-preset", "click");
+    renderer.element("add-input").value = "dave dave alice";
+    await renderer.fire("add-btn", "click");
+    await removeMember(renderer, "alice");
+    const move = {
+        dataset: { moveCalendar: "dave", direction: "left" },
+        closest(selector) { return selector === "[data-move-calendar]" ? this : null; },
+    };
+    renderer.dispatch("click", move);
+    await renderer.waitForOrder();
+    assert.equal(calls.length, 0);
+    assert.deepEqual(renderer.data().settings.calendars, base);
+    assert.equal(renderer.data().snapshot, snapshot);
+    assert.equal(renderer.element("grid").innerHTML, grid);
+    assert.match(renderer.element("chips").innerHTML, /data-remove="dave"[\s\S]+data-remove="bob"/);
+    assert.doesNotMatch(renderer.element("chips").innerHTML, /data-remove="alice"|data-remove="charlie"/);
+    assert.equal(renderer.element("confirm-members").disabled, false);
+    assert.equal(renderer.element("member-message").hidden, false);
+    assert.match(renderer.element("member-message").textContent, /確定済みのメンバー/);
+    renderer.element("preset-name").value = "Draft";
+    await renderer.fire("preset-name", "input");
+    assert.equal(renderer.element("save-preset").disabled, true);
+    await renderer.fire("save-preset", "click");
+    assert.equal(calls.length, 0);
+    assert.match(renderer.element("preset-message").textContent, /確定してから/);
+
+    renderer.apply({ ...data, revision: 2, settings: { ...data.settings, showFreeSlots: true } });
+    assert.match(renderer.element("chips").innerHTML, /data-remove="dave"/);
+    await renderer.fire("confirm-members", "click");
+    assert.deepEqual(calls, [{
+        route: "/api/settings",
+        body: { settings: { calendars: [{ id: "dave", label: "" }, base[1]] }, expectedCalendars: base, refresh: true },
+    }]);
+    assert.equal(renderer.element("member-actions").hidden, true);
+    await renderer.fire("confirm-members", "click");
+    assert.equal(calls.length, 1);
+});
+
+test("canceling member edits and adding existing members never changes the confirmed profile", async () => {
+    const renderer = createRenderer();
+    const data = orderingData();
+    renderer.apply(data);
+    renderer.useFetch(() => { throw new Error("unexpected request"); });
+    renderer.element("add-input").value = "alice bob alice";
+    await renderer.fire("add-btn", "click");
+    assert.equal(renderer.element("member-actions").hidden, true);
+    for (const { id } of data.settings.calendars) await removeMember(renderer, id);
+    assert.match(renderer.element("chips").innerHTML, /カレンダー未設定/);
+    assert.equal(renderer.element("confirm-members").disabled, false);
+    assert.deepEqual(renderer.data().settings.calendars, data.settings.calendars);
+    await renderer.fire("cancel-members", "click");
+    assert.equal(renderer.element("member-actions").hidden, true);
+    assert.match(renderer.element("chips").innerHTML, /data-remove="alice"/);
+});
+
+test("member drafts capture the result of earlier in-flight ordering operations", async () => {
+    const renderer = createRenderer();
+    let data = orderingData();
+    renderer.apply(data);
+    let releaseMove;
+    let started;
+    const moveStarted = new Promise((resolve) => { started = resolve; });
+    const calls = [];
+    renderer.useFetch(async (url, options) => {
+        const route = new URL(url, "http://localhost").pathname;
+        const body = JSON.parse(options.body);
+        calls.push({ route, body });
+        if (route.endsWith("/move")) {
+            started();
+            await new Promise((resolve) => { releaseMove = resolve; });
+            const [alice, bob, charlie] = data.settings.calendars;
+            const calendars = [bob, alice, charlie];
+            data = { ...data, revision: 2, settings: { ...data.settings, calendars }, snapshot: null };
+        } else {
+            data = { ...data, revision: 3, settings: { ...data.settings, ...body.settings } };
+        }
+        return { ok: true, json: async () => data };
+    });
+    renderer.dispatch("click", {
+        dataset: { moveCalendar: "alice", direction: "right" },
+        closest(selector) { return selector === "[data-move-calendar]" ? this : null; },
+    });
+    await moveStarted;
+    renderer.element("add-input").value = "dave";
+    const adding = renderer.fire("add-btn", "click");
+    releaseMove();
+    await adding;
+    assert.equal(calls.length, 1);
+    assert.equal(renderer.element("confirm-members").disabled, false);
+    await renderer.fire("confirm-members", "click");
+    assert.deepEqual(calls[1].body.expectedCalendars.map((entry) => entry.id), ["bob", "alice", "charlie"]);
+    assert.deepEqual(calls[1].body.settings.calendars.map((entry) => entry.id), ["bob", "alice", "charlie", "dave"]);
+});
+
+test("confirming an empty member list submits it instead of restoring the old members", async () => {
+    const renderer = createRenderer();
+    const data = orderingData();
+    renderer.apply(data);
+    for (const { id } of data.settings.calendars) await removeMember(renderer, id);
+    const calls = [];
+    renderer.useFetch(async (_url, options) => {
+        const body = JSON.parse(options.body);
+        calls.push(body.settings.calendars);
+        return { ok: true, json: async () => ({ ...data, settings: { ...data.settings, calendars: [] }, snapshot: null }) };
+    });
+    await renderer.fire("confirm-members", "click");
+    assert.deepEqual(calls, [[]]);
+    assert.equal(renderer.element("member-actions").hidden, true);
+    assert.deepEqual(Array.from(renderer.data().settings.calendars), []);
+});
+
+test("member confirmation reports failures, preserves drafts and supports retry", async () => {
+    for (const status of [200, 500]) {
+        const renderer = createRenderer();
+        const data = orderingData();
+        renderer.apply(data);
+        await removeMember(renderer, "alice");
+        renderer.useFetch(async () => ({
+            ok: status === 200,
+            json: async () => ({ ...data, error: "保存に失敗しました" }),
+        }));
+        await renderer.fire("confirm-members", "click");
+        assert.match(renderer.element("member-error").textContent, /保存に失敗しました/);
+        assert.equal(renderer.element("confirm-members").disabled, false);
+        assert.doesNotMatch(renderer.element("chips").innerHTML, /data-remove="alice"/);
+        renderer.apply({ ...data, settings: { ...data.settings, shareMode: true } });
+        assert.doesNotMatch(renderer.element("member-error").textContent, /保存に失敗しました/);
+        assert.match(renderer.element("member-error").textContent, /共有モード中のため詳細は非表示/);
+        renderer.useFetch(async (_url, options) => ({
+            ok: true,
+            json: async () => ({
+                ...data, settings: { ...data.settings, ...JSON.parse(options.body).settings }, snapshot: null,
+            }),
+        }));
+        await renderer.fire("confirm-members", "click");
+        assert.equal(renderer.element("member-actions").hidden, true);
+        assert.equal(renderer.element("member-error").hidden, true);
+    }
+});
+
+test("an acknowledged confirmation survives SSE before a lost response and locks member edits", async () => {
+    const renderer = createRenderer();
+    const data = orderingData();
+    renderer.apply(data);
+    await removeMember(renderer, "alice");
+    let rejectResponse;
+    let started;
+    const requestStarted = new Promise((resolve) => { started = resolve; });
+    let calls = 0;
+    renderer.useFetch(async () => {
+        calls += 1;
+        started();
+        return new Promise((_resolve, reject) => { rejectResponse = reject; });
+    });
+    const confirming = renderer.fire("confirm-members", "click");
+    await requestStarted;
+    assert.equal(renderer.element("confirm-members").disabled, true);
+    assert.equal(renderer.element("cancel-members").disabled, true);
+    assert.equal(renderer.element("add-btn").disabled, true);
+    await renderer.fire("cancel-members", "click");
+    await renderer.fire("confirm-members", "click");
+    const members = data.settings.calendars.slice(1);
+    renderer.apply({ ...data, revision: 2, settings: { ...data.settings, calendars: members }, snapshot: null, loading: true });
+    rejectResponse(new Error("接続が切れました"));
+    await confirming;
+    assert.equal(renderer.element("member-actions").hidden, true);
+    assert.match(renderer.element("member-error").textContent, /メンバーは確定済み.*接続が切れました/);
+    assert.deepEqual(renderer.data().settings.calendars, members);
+    await renderer.fire("confirm-members", "click");
+    assert.equal(calls, 1);
+});
+
+test("external member changes preserve the draft but prevent overwriting newer members", async () => {
+    for (const viaResponse of [false, true]) {
+        const renderer = createRenderer();
+        const data = orderingData();
+        renderer.apply(data);
+        await removeMember(renderer, "alice");
+        const newer = { ...data, revision: 2, settings: { ...data.settings, calendars: [data.settings.calendars[2]] }, snapshot: null };
+        let calls = 0;
+        renderer.useFetch(async () => {
+            calls += 1;
+            return { ok: false, json: async () => ({ ...newer, error: "メンバーが変更されました", code: "calendar_members_changed" }) };
+        });
+        if (!viaResponse) renderer.apply(newer);
+        await renderer.fire("confirm-members", "click");
+        assert.equal(calls, viaResponse ? 1 : 0);
+        assert.equal(renderer.element("confirm-members").disabled, true);
+        assert.equal(renderer.element("member-error").hidden, false);
+        assert.match(renderer.element("member-error").textContent, /別の操作でメンバーが変更/);
+        assert.match(renderer.element("chips").innerHTML, /data-remove="bob"/);
+        await renderer.fire("cancel-members", "click");
+        assert.doesNotMatch(renderer.element("chips").innerHTML, /data-remove="bob"/);
+        assert.equal(renderer.element("member-error").hidden, true);
+    }
+});
+
 test("member presets can be saved, selected, applied, updated and deleted from the canvas", async () => {
     const renderer = createRenderer();
     const alice = { id: "alice@example.com", label: "Alice" };
@@ -2382,14 +2611,18 @@ test("member presets can be saved, selected, applied, updated and deleted from t
     data = { ...data, settings: { ...data.settings, calendars: [bob] } };
     renderer.setData(data);
     await renderer.fire("apply-preset", "click");
-    assert.deepEqual(calls[1], { route: "/api/presets/apply", body: { id: "first" } });
-    assert.deepEqual(data.settings.calendars, [alice]);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(data.settings.calendars, [bob]);
+    assert.match(renderer.element("chips").innerHTML, /Alice/);
+    assert.equal(renderer.element("confirm-members").disabled, false);
+    assert.match(renderer.element("preset-message").textContent, /確定して取得/);
     assert.equal(data.settings.workStart, "09:00");
+    await renderer.fire("cancel-members", "click");
 
     data = { ...data, settings: { ...data.settings, calendars: [bob] } };
     renderer.setData(data);
     await renderer.fire("update-preset", "click");
-    assert.deepEqual(calls[2], { route: "/api/presets/update", body: { id: "first" } });
+    assert.deepEqual(calls[1], { route: "/api/presets/update", body: { id: "first" } });
     assert.equal(renderer.element("preset-select").value, "updated");
     assert.equal(renderer.element("preset-summary").textContent, 'Team "<&>: Bob');
 
@@ -2397,10 +2630,10 @@ test("member presets can be saved, selected, applied, updated and deleted from t
     assert.equal(renderer.element("preset-delete-confirm").hidden, false);
     await renderer.fire("cancel-delete-preset", "click");
     assert.equal(renderer.element("preset-delete-confirm").hidden, true);
-    assert.equal(calls.length, 3);
+    assert.equal(calls.length, 2);
     await renderer.fire("delete-preset", "click");
     await renderer.fire("confirm-delete-preset", "click");
-    assert.deepEqual(calls[3], { route: "/api/presets/delete", body: { id: "updated" } });
+    assert.deepEqual(calls[2], { route: "/api/presets/delete", body: { id: "updated" } });
     assert.deepEqual(data.presets, []);
     assert.deepEqual(data.settings.calendars, [bob]);
 });
@@ -2484,6 +2717,52 @@ function recurringUiResult(scanId, seriesIndex = null, durationMinutes = 30) {
         }],
     };
 }
+
+test("single candidates use their exact times and only project valid visible dates", () => {
+    const renderer = createRenderer();
+    const data = recurringUiData();
+    data.scan.candidates = [
+        { day: "2026-10-12", start: "10:15", end: "10:45", blockMinutes: 120, reasons: [] },
+        { day: "2026-10-12", start: "23:45", end: "24:00", blockMinutes: 90, reasons: [] },
+        { day: "2026-10-12", start: "23:45", end: "24:30", blockMinutes: 90, reasons: [] },
+        { day: "2026-10-13", start: "11:00", end: "11:30", blockMinutes: 30, reasons: [] },
+    ];
+    renderer.apply(data);
+    const view = renderer.candidateView();
+    assert.equal(view.kind, "single");
+    assert.equal(view.invalid, true);
+    assert.equal(view.days.size, 1);
+    assert.equal(view.days.get("2026-10-12").length, 2);
+    const html = renderer.element("grid").innerHTML;
+    assert.equal([...html.matchAll(/top:553\.5px;height:27px/g)].length, 2);
+    assert.equal([...html.matchAll(/top:1282\.5px;height:13\.5px/g)].length, 2);
+    assert.doesNotMatch(html, /top:594px;height:27px/);
+    assert.match(renderer.element("candidate-grid-note").textContent, /不正な候補データ/);
+});
+
+test("candidate projections stop when the displayed participants or results are unreliable", () => {
+    const renderer = createRenderer();
+    const data = recurringUiData();
+    renderer.apply(data);
+    assert.equal(renderer.candidateView().kind, "single");
+    renderer.apply({ ...data, revision: 2, loading: true });
+    assert.equal(renderer.candidateView().kind, "loading");
+    renderer.apply({ ...data, revision: 3, error: "fetch failure" });
+    assert.equal(renderer.candidateView().kind, "unavailable");
+    renderer.apply({
+        ...data, revision: 4,
+        snapshot: {
+            ...data.snapshot,
+            calendars: data.snapshot.calendars.map((calendar) =>
+                calendar.id === "bob" ? { ...calendar, error: "fetch failure" } : calendar),
+        },
+    });
+    assert.equal(renderer.candidateView().kind, "unavailable");
+    renderer.apply({ ...data, revision: 5, scan: { ...data.scan, calendars: data.scan.calendars.slice(0, 1) } });
+    assert.equal(renderer.candidateView().kind, "unavailable");
+    renderer.apply({ ...data, revision: 6, scanProgress: { phase: "starting", done: 0, total: 1 } });
+    assert.equal(renderer.candidateView().kind, "scanning");
+});
 
 test("a new recurring meeting scan displays occurrence coverage and conflict dates", async () => {
     const renderer = createRenderer();
