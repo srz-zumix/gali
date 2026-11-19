@@ -94,6 +94,8 @@ setTimeout(() => {
         const conflict = await request({ settings: { calendars: [bob] }, expectedCalendars: [alice] });
         assert.equal(conflict.status, 409);
         assert.equal(conflict.body.code, "calendar_members_changed");
+        assert.equal(conflict.body.error, null);
+        assert.ok(conflict.body.conflictError);
         assert.deepEqual(members.settings.calendars, [charlie]);
         assert.deepEqual((await loadSettings("member-confirmation")).calendars, [charlie]);
         assert.deepEqual(await calls(), before);

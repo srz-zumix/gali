@@ -2552,7 +2552,7 @@ test("external member changes preserve the draft but prevent overwriting newer m
         let calls = 0;
         renderer.useFetch(async () => {
             calls += 1;
-            return { ok: false, json: async () => ({ ...newer, error: "メンバーが変更されました", code: "calendar_members_changed" }) };
+            return { ok: false, json: async () => ({ ...newer, conflictError: "メンバーが変更されました", code: "calendar_members_changed" }) };
         });
         if (!viaResponse) renderer.apply(newer);
         await renderer.fire("confirm-members", "click");

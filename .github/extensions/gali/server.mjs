@@ -317,7 +317,7 @@ async function handleRequest(req, res, { profile, instanceId, token, port, strea
         sendJson(res, 200, state.toJSON());
     } catch (error) {
         if (error instanceof CalendarMembersConflictError) {
-            sendJson(res, 409, { ...state.toJSON(), error: error.message, code: error.code });
+            sendJson(res, 409, { ...state.toJSON(), conflictError: error.message, code: error.code });
             return;
         }
         sendJson(res, 200, { ...state.toJSON(), error: toMessage(error) });

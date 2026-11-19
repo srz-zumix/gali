@@ -110,7 +110,12 @@ async function post(path, body) {
     });
     const payload = await response.json();
     if (!response.ok) {
-        if (payload.code === "calendar_members_changed") apply(payload);
+        if (payload.code === "calendar_members_changed") {
+            // The conflict message belongs to this request only; apply the
+            // canonical state as-is so it does not masquerade as a profile error.
+            apply(payload);
+            throw new Error(payload.conflictError || `HTTP ${response.status}`);
+        }
         throw new Error(payload.error || `HTTP ${response.status}`);
     }
     apply(payload);
@@ -2454,7 +2459,10 @@ async function runWhatIf(position) {
 $("toggle-adjust").addEventListener("click", (domEvent) => {
     const panel = $("adjust");
     panel.hidden = !panel.hidden;
-    if (panel.hidden) clearCandidateInteraction();
+    if (panel.hidden) {
+        clearCandidateInteraction();
+        if (state.data) renderCandidates(state.data.scan, sharingMode());
+    }
     domEvent.currentTarget.setAttribute("aria-expanded", String(!panel.hidden));
     if (!panel.hidden && !document.querySelector('#adjust-tabs button[aria-pressed="true"]')) selectTab("candidates");
     updateCandidateDisplay();
