@@ -6234,7 +6234,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ================================================================================
 Package: golang.org/x/oauth2
 License: BSD-3-Clause
-URL: https://cs.opensource.google/go/x/oauth2/+/v0.37.0:LICENSE
+URL: https://cs.opensource.google/go/x/oauth2/+/v0.38.0:LICENSE
 ================================================================================
 Copyright 2009 The Go Authors.
 
