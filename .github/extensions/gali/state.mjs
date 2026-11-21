@@ -89,6 +89,13 @@ export class CalendarOrderError extends Error {
     }
 }
 
+export class CalendarMembersConflictError extends Error {
+    constructor() {
+        super("別の操作でメンバーが変更されました。最新のメンバーを確認してから変更してください。");
+        this.code = "calendar_members_changed";
+    }
+}
+
 export class RecurringSearchError extends Error {
     constructor(code, message) {
         super(message);
@@ -194,6 +201,7 @@ export class ProfileState {
         this.settings = null;
         this.snapshot = null;
         this.error = null;
+        this.errorSource = null;
         this.loading = false;
         this.revision = 0;
         this.listeners = new Set();
@@ -275,8 +283,14 @@ export class ProfileState {
      * computed before the lock is taken can be built on settings another
      * request has already replaced, silently dropping that request's change.
      */
-    async updateSettings(patch, { refresh = true } = {}) {
+    async updateSettings(patch, { refresh = true, expectedCalendars } = {}) {
         await this.#locked(async () => {
+            if (expectedCalendars !== undefined) {
+                const signature = (calendars) => JSON.stringify(calendars.map(({ id, label }) => [id, label || ""]));
+                if (signature(expectedCalendars) !== signature(this.settings.calendars)) {
+                    throw new CalendarMembersConflictError();
+                }
+            }
             const before = this.settings;
             const previousFetchKey = this.#fetchKey();
             const resolved = typeof patch === "function" ? patch(this.settings) : patch;
@@ -286,6 +300,7 @@ export class ProfileState {
                 this.fetchGeneration += 1;
                 this.snapshot = null;
                 this.error = null;
+                this.errorSource = null;
                 this.loading = false;
             } else {
                 if (this.snapshot) {
@@ -361,6 +376,7 @@ export class ProfileState {
             refresh.catch((error) => {
                 if (generation === this.fetchGeneration) {
                     this.error = `プリセット適用後の予定取得に失敗しました: ${error.message || error}`;
+                    this.errorSource = "display";
                     this.publish();
                 }
             });
@@ -435,6 +451,7 @@ export class ProfileState {
                     calendars: calendarsInSettingsOrder(cached.calendars, this.settings),
                 };
                 this.error = null;
+                this.errorSource = null;
                 this.loading = false;
                 this.publish();
                 return this.snapshot;
@@ -445,6 +462,7 @@ export class ProfileState {
         if (tail) {
             this.loading = true;
             this.error = null;
+            this.errorSource = null;
             this.publish();
             const queued = tail.catch(() => {}).then(() => (
                 this.#isCurrentFetch(request) ? this.#startFetch(request) : null
@@ -544,6 +562,7 @@ export class ProfileState {
         if (this.#isCurrentFetch(request)) {
             this.loading = true;
             this.error = null;
+            this.errorSource = null;
             this.publish();
         }
         try {
@@ -558,6 +577,7 @@ export class ProfileState {
         } catch (error) {
             if (this.#isCurrentFetch(request)) {
                 this.error = error instanceof GaliError ? error.message : String(error?.message || error);
+                this.errorSource = "display";
             }
         } finally {
             if (this.#isCurrentFetch(request)) {
@@ -785,6 +805,10 @@ export class ProfileState {
                     keys: group.keys,
                 })),
             };
+            if (this.errorSource === "scan") {
+                this.error = null;
+                this.errorSource = null;
+            }
             this.pruneCache().catch(() => {});
         } catch (error) {
             if (!stale()) {
@@ -792,6 +816,7 @@ export class ProfileState {
                 // retry or a shorter scan) must still run after this failure.
                 this.clearScanResults();
                 this.error = error instanceof GaliError ? error.message : String(error && error.message);
+                this.errorSource = "scan";
             }
         } finally {
             if (this.scanProgress === progress) this.scanProgress = null;

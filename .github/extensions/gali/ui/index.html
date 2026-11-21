@@ -43,6 +43,12 @@
             </p>
 
             <div class="row chips" id="chips"></div>
+            <div class="row" id="member-actions" hidden>
+                <button type="button" id="confirm-members">確定して取得</button>
+                <button type="button" id="cancel-members">変更を取り消す</button>
+            </div>
+            <p class="hint" id="member-message" role="status" aria-live="polite" hidden></p>
+            <p class="status error" id="member-error" role="alert" hidden></p>
             <p class="hint" id="calendar-order-message" role="status" aria-live="polite" hidden></p>
 
             <div class="row preset-toolbar">
@@ -63,7 +69,7 @@
                         <input id="preset-name" type="text" maxlength="80" placeholder="例: プロジェクトチーム" />
                         <button type="button" id="save-preset" disabled>新規保存</button>
                     </div>
-                    <p class="hint">プリセットはすべてのプロファイルで共有します。適用すると現在のメンバーを置き換えます。</p>
+                    <p class="hint">プリセットはすべてのプロファイルで共有します。適用後に「確定して取得」を押すとメンバーを切り替えます。保存・更新はメンバーの確定後に行ってください。</p>
                 </div>
                 <div class="field">
                     <p class="hint" id="preset-summary">プリセットを選択するとメンバーを確認できます。</p>
@@ -114,6 +120,7 @@
                 </div>
                 <p class="hint" id="scan-progress" hidden></p>
                 <p class="error" id="scan-error" role="alert" hidden></p>
+                <p class="hint" id="candidate-grid-note" role="status" aria-live="polite"></p>
 
                 <div class="adjust-tabs btn-group" id="adjust-tabs">
                     <button type="button" data-tab="candidates">候補</button>
