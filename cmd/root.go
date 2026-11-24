@@ -28,6 +28,7 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.AddCommand(NewAuthCmd())
 	rootCmd.AddCommand(NewCalendarCmd())
 	rootCmd.AddCommand(NewCheckVisibilityCmd())
 	rootCmd.AddCommand(NewCopilotCmd())

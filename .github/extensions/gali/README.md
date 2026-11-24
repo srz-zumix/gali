@@ -69,8 +69,9 @@ GitHub Copilot app 用の canvas 拡張です。`gali` CLI を使って **他ユ
 - CLI は `GALI_BIN` の明示指定 → リポジトリ直下の `gali`（Windows は `gali.exe`）→ PATH の `gali` の順で選びます。ローカル版はリポジトリ直下で `make build`、インストール版は `brew install srz-zumix/tap/gali` で用意してください。ローカル版が存在するのに実行できない場合はエラーを表示し、インストール版には切り替えません
 - 表示と調整パネルの取得キャッシュは使用する CLI ごとに分離され、ローカル版とインストール版の切り替え時に以前の結果を再利用しません
 - 補完元は CLI の `extendedProperties.private["gali.completedFrom"]`（ID）と `gali.completedFromName`（名前）から取得します。`get_schedule` の `includeEvents: true` でも `completedFrom`・`completedFromName`・`completionInferred` を取得できます。補完元情報のない旧 CLI では従来の推定を維持し、「補?」バッジと「推定・補完元不明」を表示します
-- README の「SetUp」に従って `gcloud auth application-default login` 済みであること
-  - `invalid_grant` / `invalid_rapt` エラーが出る場合は再度 `gcloud auth application-default login` を実行してください
+- README の「SetUp」に従って `gali auth login` 済みであること（Google Cloud CLI が必要です）
+  - 未ログインやログイン期限切れ（`invalid_grant` / `invalid_rapt` など）のときは「Google にログイン」ボタンが表示されます。押すとブラウザが開くので、アカウントを選んで許可してください。完了すると予定を自動で再取得します
+  - ボタンは拡張を動かしているマシンでブラウザを開きます。ブラウザが開かない場合は、表示されるリンクを開いてください
 
 ## 設定の保存場所
 

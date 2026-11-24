@@ -4,7 +4,7 @@
 // module is the only place that knows how to spawn the binary and how to turn
 // its Google Calendar payloads into the shape the renderer wants.
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -250,4 +250,92 @@ export async function collectCalendar(calendarId, options) {
     events = events.filter((event) => event.status !== "cancelled" && event.start);
     events.sort((a, b) => String(a.start).localeCompare(String(b.start)));
     return { summary: primary.summary, timeZone: primary.timeZone, accessRole: primary.accessRole, events };
+}
+
+const LOGIN_TIMEOUT_MS = 10 * 60_000;
+const AUTH_URL = /https:\/\/accounts\.google\.com\/[^\s"'<>]+/;
+
+let loginJob = null;
+
+function loginSnapshot(job) {
+    if (!job) return { status: "idle", url: "", error: "" };
+    return { status: job.status, url: job.url, error: job.error };
+}
+
+/** Current state of the canvas-triggered `gali auth login`. */
+export function loginStatus() {
+    return loginSnapshot(loginJob);
+}
+
+/**
+ * Run `gali auth login` (which runs gcloud and opens the browser) with at most
+ * one sign-in at a time. The authorization URL is captured from the output so
+ * the canvas can offer it when the browser does not open by itself.
+ */
+export function startLogin({ timeoutMs = LOGIN_TIMEOUT_MS } = {}) {
+    if (loginJob?.status === "running") return loginJob.done;
+    const job = { status: "running", url: "", error: "" };
+    loginJob = job;
+    const finish = (status, error = "") => {
+        if (job.status !== "running") return;
+        job.status = status;
+        job.error = error;
+    };
+    job.done = (async () => {
+        let galiBin;
+        try {
+            galiBin = await resolveGaliBinary();
+        } catch (error) {
+            finish("failed", error.message);
+            return loginSnapshot(job);
+        }
+        await new Promise((resolve) => {
+            // A process group lets a timeout stop gcloud too, not only gali.
+            const detached = process.platform !== "win32";
+            const child = spawn(galiBin, ["auth", "login"], { stdio: ["ignore", "pipe", "pipe"], detached });
+            let output = "";
+            let timedOut = false;
+            const kill = () => {
+                try {
+                    if (detached) process.kill(-child.pid, "SIGTERM");
+                    else child.kill();
+                } catch {
+                    // Already exited.
+                }
+            };
+            const onData = (chunk) => {
+                output += chunk;
+                if (!job.url) job.url = output.match(AUTH_URL)?.[0] || "";
+            };
+            child.stdout.setEncoding("utf8").on("data", onData);
+            child.stderr.setEncoding("utf8").on("data", onData);
+            const timer = setTimeout(() => {
+                timedOut = true;
+                kill();
+            }, timeoutMs);
+            process.once("exit", kill);
+            const done = () => {
+                clearTimeout(timer);
+                process.removeListener("exit", kill);
+                resolve();
+            };
+            child.on("error", (error) => {
+                finish(
+                    "failed",
+                    error.code === "ENOENT"
+                        ? `\`${galiBin}\` コマンドが見つかりません。\`brew install srz-zumix/tap/gali\` で用意するか、GALI_BIN 環境変数でパスを指定してください。`
+                        : error.message,
+                );
+                done();
+            });
+            child.on("close", (code) => {
+                if (code === 0) finish("succeeded");
+                else if (timedOut) finish("failed", "ログインが時間内に完了しなかったため中断しました。もう一度お試しください。");
+                else finish("failed", cleanMessage(output).split("\n").slice(-5).join("\n") || `gali auth login が終了コード ${code} で失敗しました。`);
+                done();
+            });
+        });
+        return loginSnapshot(job);
+    })();
+    return job.done;
 }

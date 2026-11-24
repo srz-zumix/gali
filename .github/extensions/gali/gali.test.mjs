@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { collectCalendar, GaliError, resolveGaliBinary } from "./gali.mjs";
+import { collectCalendar, GaliError, loginStatus, resolveGaliBinary, startLogin } from "./gali.mjs";
 
 test("gali binary selection", async (t) => {
     const directory = await mkdtemp(path.join(tmpdir(), "gali-binary-test-"));
@@ -176,4 +176,46 @@ test("a CLI continuation token is surfaced as a truncation error", { skip: proce
         collectCalendar("alice", { since: "2026-03-02", until: "2026-03-08" }),
         (error) => error instanceof GaliError && error.code === "calendar_truncated",
     );
+});
+
+test("canvas login runs gali auth login once and captures the authorization URL", { skip: process.platform === "win32" }, async (t) => {
+    const directory = await mkdtemp(path.join(tmpdir(), "gali-login-test-"));
+    const originalBin = process.env.GALI_BIN;
+    t.after(async () => {
+        if (originalBin === undefined) delete process.env.GALI_BIN;
+        else process.env.GALI_BIN = originalBin;
+        await rm(directory, { recursive: true, force: true });
+    });
+    const script = async (name, body) => {
+        const file = path.join(directory, name);
+        await writeFile(file, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+        return file;
+    };
+
+    await t.test("succeeds and shares one run between concurrent requests", async () => {
+        const log = path.join(directory, "calls.log");
+        process.env.GALI_BIN = await script("ok", `echo "$*" >> '${log}'\necho "Go to https://accounts.google.com/o/oauth2/auth?x=1 now" >&2\nsleep 0.2`);
+        const first = startLogin();
+        const second = startLogin();
+        assert.equal(loginStatus().status, "running");
+        const result = await first;
+        assert.deepEqual(await second, result);
+        assert.deepEqual(result, { status: "succeeded", url: "https://accounts.google.com/o/oauth2/auth?x=1", error: "" });
+        const { readFile } = await import("node:fs/promises");
+        assert.equal((await readFile(log, "utf8")).trim(), "auth login");
+    });
+
+    await t.test("reports the CLI error", async () => {
+        process.env.GALI_BIN = await script("fail", "echo 'gcloud command not found.' >&2\nexit 1");
+        const result = await startLogin();
+        assert.equal(result.status, "failed");
+        assert.match(result.error, /gcloud command not found/);
+    });
+
+    await t.test("stops a login that does not finish in time", async () => {
+        process.env.GALI_BIN = await script("hang", "sleep 30");
+        const result = await startLogin({ timeoutMs: 200 });
+        assert.equal(result.status, "failed");
+        assert.match(result.error, /時間内に完了しなかった/);
+    });
 });

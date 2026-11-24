@@ -31,13 +31,20 @@ func getClient(config *oauth2.Config) (*http.Client, error) {
 	return getClientWithTokenFile(context.Background(), config, defaultTokenCacheFile, os.Stdout)
 }
 
-func getClientWithTokenFile(ctx context.Context, config *oauth2.Config, tokenFile string, output io.Writer) (*http.Client, error) {
+func tokenCachePath(tokenFile string) (string, error) {
 	usr, err := user.Current()
 	if err != nil {
-		return nil, fmt.Errorf("unable to get current user: %w", err)
+		return "", fmt.Errorf("unable to get current user: %w", err)
 	}
-	tokenCacheDir := filepath.Join(usr.HomeDir, ".credentials")
-	tokenCacheFile := filepath.Join(tokenCacheDir, tokenFile)
+	return filepath.Join(usr.HomeDir, ".credentials", tokenFile), nil
+}
+
+func getClientWithTokenFile(ctx context.Context, config *oauth2.Config, tokenFile string, output io.Writer) (*http.Client, error) {
+	tokenCacheFile, err := tokenCachePath(tokenFile)
+	if err != nil {
+		return nil, err
+	}
+	tokenCacheDir := filepath.Dir(tokenCacheFile)
 
 	tok, err := tokenFromFile(tokenCacheFile)
 	if err != nil {

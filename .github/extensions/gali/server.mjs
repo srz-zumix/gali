@@ -10,7 +10,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
-import { listCalendars, GaliError } from "./gali.mjs";
+import { listCalendars, GaliError, loginStatus, startLogin } from "./gali.mjs";
 import { PresetError, presetStore } from "./presets.mjs";
 import { CalendarMembersConflictError, CalendarOrderError, RecurringSearchError, getProfileState, shiftAnchor, todayISO } from "./state.mjs";
 
@@ -193,6 +193,11 @@ async function handleRequest(req, res, { profile, instanceId, token, port, strea
         return;
     }
 
+    if (route === "/api/auth/status") {
+        sendJson(res, 200, loginStatus());
+        return;
+    }
+
     if (req.method !== "POST") {
         sendJson(res, 405, { error: "method not allowed" });
         return;
@@ -203,6 +208,16 @@ async function handleRequest(req, res, { profile, instanceId, token, port, strea
         body = await readBody(req);
     } catch (error) {
         sendJson(res, 400, { error: toMessage(error) });
+        return;
+    }
+
+    if (route === "/api/auth/login") {
+        startLogin().then((result) => {
+            if (result.status !== "succeeded") return;
+            calendarCache = null;
+            state.refresh({ force: true }).catch(() => {});
+        });
+        sendJson(res, 202, loginStatus());
         return;
     }
 
