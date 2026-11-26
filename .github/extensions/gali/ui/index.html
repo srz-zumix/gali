@@ -246,6 +246,11 @@
             </div>
 
             <p class="status" id="status" role="status" aria-live="polite" aria-atomic="true"></p>
+            <div class="auth-panel" id="auth-panel" hidden>
+                <p>予定を見るには Google へのログインが必要です。</p>
+                <button type="button" id="auth-login">Google にログイン</button>
+                <p class="hint" id="auth-message" role="status" aria-live="polite"></p>
+            </div>
         </header>
 
         <dialog class="date-dialog" id="date-calendar" aria-labelledby="date-calendar-title">

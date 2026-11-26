@@ -3,6 +3,7 @@
 
 import { HOUR_HEIGHT, MIN_GRID_HEIGHT, computeGeometry, clampGridHeight } from "./layout.mjs";
 import { buildSharedEventGroups, calendarEventKey } from "./meetings.mjs";
+import { isAuthError } from "./auth.mjs";
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
 const CALENDAR_WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
@@ -40,6 +41,7 @@ const state = {
     singleVisible: 30,
     scanRequest: 0, activeScanRequest: null, scanError: null, moveOptionsKey: null, moveOptionsScanId: null,
     renderedGridSnapshot: null,
+    calendarListAuthError: false, login: { status: "idle", url: "", error: "" },
 };
 
 /* ---------------- helpers ---------------- */
@@ -1600,11 +1602,76 @@ function apply(data) {
     if (!state.calendarDrag) renderMembers();
     else renderPresets(data);
     renderStatus(data);
+    renderAuth(data);
     if (!state.calendarDrag) renderGrid(data);
     else renderCandidateLayers(data);
     renderFreeSlots(data);
     renderAdjust(data);
     renderGridHeight();
+}
+
+/* ---------------- Google sign-in ---------------- */
+
+function authNeeded(data) {
+    if (state.calendarListAuthError || isAuthError(state.scanError)) return true;
+    if (!data) return false;
+    if (isAuthError(data.error)) return true;
+    return ((data.snapshot && data.snapshot.calendars) || []).some((calendar) => isAuthError(calendar.error));
+}
+
+function renderAuth(data) {
+    const login = state.login;
+    const running = login.status === "running";
+    const failed = login.status === "failed";
+    $("auth-panel").hidden = !(running || failed || authNeeded(data));
+    const button = $("auth-login");
+    button.disabled = running;
+    button.textContent = running ? "ログイン待ち…" : "Google にログイン";
+    const message = $("auth-message");
+    if (running) {
+        const fallback = login.url
+            ? ` ブラウザが開かない場合は <a href="${escapeHtml(login.url)}" target="_blank" rel="noopener noreferrer">こちらのリンク</a> を開いてください。`
+            : "";
+        message.className = "hint";
+        message.innerHTML = `ブラウザで Google アカウントを選び、「許可」を押してください。${fallback}`;
+    } else if (failed) {
+        message.className = "status error";
+        message.textContent = `ログインできませんでした: ${errorDetail(login.error, data?.settings)}`;
+    } else {
+        message.className = "hint";
+        message.textContent = "";
+    }
+}
+
+async function fetchLogin(path, options) {
+    try {
+        const response = await fetch(withToken(path), options);
+        state.login = await response.json();
+    } catch (error) {
+        state.login = { status: "failed", url: "", error: String(error?.message || error) };
+    }
+}
+
+async function waitForLogin() {
+    while (state.login.status === "running") {
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+        await fetchLogin("/api/auth/status");
+        renderAuth(state.data);
+    }
+    if (state.login.status === "succeeded") {
+        state.calendarListAuthError = false;
+        renderAuth(state.data);
+        loadCalendarOptions();
+    }
+}
+
+async function startGoogleLogin() {
+    if (state.login.status === "running") return;
+    state.login = { status: "running", url: "", error: "" };
+    renderAuth(state.data);
+    await fetchLogin("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    renderAuth(state.data);
+    await waitForLogin();
 }
 
 /* ---------------- calendar viewport ---------------- */
@@ -2013,9 +2080,11 @@ async function loadCalendarOptions() {
         $("calendar-hint").textContent = payload.error
             ? `候補の取得に失敗しました: ${errorDetail(payload.error)}`
             : "候補は自分のカレンダー一覧（gali list）です。他ユーザーのメールアドレスも直接入力できます。";
+        state.calendarListAuthError = isAuthError(payload.error);
     } catch (error) {
         $("calendar-hint").textContent = `候補の取得に失敗しました: ${errorDetail(error)}`;
     }
+    renderAuth(state.data);
 }
 
 async function addCalendar() {
@@ -2533,6 +2602,7 @@ $("policy-patterns").addEventListener("change", (e) =>
 );
 
 $("add-btn").addEventListener("click", addCalendar);
+$("auth-login").addEventListener("click", startGoogleLogin);
 $("add-input").addEventListener("keydown", (domEvent) => {
     if (domEvent.key === "Enter") addCalendar();
 });
@@ -2559,5 +2629,10 @@ stream.onmessage = (message) => {
 
 fetch(withToken("/api/bootstrap"))
     .then((response) => response.json())
-    .then(apply)
+    .then((data) => {
+        apply(data);
+        // With no members there is no fetch whose error would reveal a missing
+        // sign-in, so check it through the calendar list on first use.
+        if (data?.settings && !data.settings.calendars?.length) loadCalendarOptions();
+    })
     .catch(() => {});

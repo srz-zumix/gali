@@ -475,6 +475,28 @@ code {
     white-space: pre-wrap;
 }
 
+.auth-panel {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 12px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color-default, #d0d7de);
+    border-radius: 6px;
+}
+
+.auth-panel[hidden] {
+    display: none;
+}
+
+.auth-panel p {
+    margin: 0;
+}
+
+.auth-panel #auth-message {
+    flex-basis: 100%;
+}
+
 /* ---------- calendar grid ---------- */
 
 main {

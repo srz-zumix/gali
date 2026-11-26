@@ -656,15 +656,16 @@ test("event layout, recurring and member controls work in the browser in normal 
     skip: !chrome && "Chrome or Chromium is unavailable; set CHROME_BIN to enable the browser test",
     timeout: 60_000,
 }, async () => {
-    const [index, css, app, layout, meetings] = await Promise.all(
-        ["index.html", "app.css", "app.js", "layout.mjs", "meetings.mjs"].map((name) =>
+    const [index, css, app, layout, meetings, auth] = await Promise.all(
+        ["index.html", "app.css", "app.js", "layout.mjs", "meetings.mjs", "auth.mjs"].map((name) =>
             readFile(new URL(`./ui/${name}`, import.meta.url), "utf8")),
     );
     const script = [
         "window.EventSource = class {}; window.fetch = () => new Promise(() => {});",
         layout.replace(/^export /gm, ""),
         meetings.replace(/^export /gm, ""),
-        app.replace(/^import .+ from "\.\/(?:layout|meetings)\.mjs";\r?\n/gm, ""),
+        auth.replace(/^export /gm, ""),
+        app.replace(/^import .+ from "\.\/(?:layout|meetings|auth)\.mjs";\r?\n/gm, ""),
         `(async () => {
             try { document.body.dataset.geometryResult = encodeURIComponent(JSON.stringify([...(${checkLayout})(), ...(${checkRecurringUi})(), ...await (${checkCandidateOverlays})(), ...await (${checkMembersUi})()])); }
             catch (error) { document.body.dataset.geometryResult = encodeURIComponent(JSON.stringify([String(error.stack || error)])); }

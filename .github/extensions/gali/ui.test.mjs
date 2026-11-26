@@ -5,9 +5,10 @@ import { createContext, Script } from "node:vm";
 
 import * as layout from "./ui/layout.mjs";
 import * as meetings from "./ui/meetings.mjs";
+import * as auth from "./ui/auth.mjs";
 
 const source = await readFile(new URL("./ui/app.js", import.meta.url), "utf8");
-const script = new Script(source.replace(/^import .+ from "\.\/(?:layout|meetings)\.mjs";\r?\n/gm, ""), {
+const script = new Script(source.replace(/^import .+ from "\.\/(?:layout|meetings|auth)\.mjs";\r?\n/gm, ""), {
     filename: "ui/app.js",
 });
 
@@ -27,6 +28,7 @@ function createRenderer({ now } = {}) {
     const context = createContext({
         ...layout,
         ...meetings,
+        ...auth,
         Date: ClockDate,
         document: {
             querySelectorAll() { return []; },
@@ -122,6 +124,11 @@ function createRenderer({ now } = {}) {
         renderStatus(data) {
             context.renderStatus(data);
             return elements.get("status");
+        },
+        renderAuth(data, login) {
+            if (login) new Script(`state.login = ${JSON.stringify(login)}`).runInContext(context);
+            context.renderAuth(data);
+            return { panel: elements.get("auth-panel"), message: elements.get("auth-message"), button: elements.get("auth-login") };
         },
         renderChips(data) {
             context.renderChips(data);
@@ -237,6 +244,33 @@ test("loading status shows the animated loading state and clears when complete",
 
     renderer.renderStatus({});
     assert.equal(status.className, "status");
+});
+
+test("sign-in panel appears only for errors a new login can fix", () => {
+    const renderer = createRenderer();
+    const settings = { calendars: [] };
+    const withError = (error) => ({ settings, snapshot: { calendars: [{ id: "a", label: "a", events: [], error }] } });
+
+    assert.equal(renderer.renderAuth(withError("")).panel.hidden, true);
+    assert.equal(renderer.renderAuth(withError("googleapi: Error 404: Not Found")).panel.hidden, true);
+    assert.equal(renderer.renderAuth(withError('oauth2: "invalid_grant" "reauth related error (invalid_rapt)"')).panel.hidden, false);
+    assert.equal(renderer.renderAuth({ settings, error: "google: could not find default credentials." }).panel.hidden, false);
+});
+
+test("sign-in panel offers the authorization URL while waiting and reports failures", () => {
+    const renderer = createRenderer();
+    const data = { settings: { calendars: [] } };
+    const waiting = renderer.renderAuth(data, { status: "running", url: "https://accounts.google.com/o/oauth2/auth?a=1&b=2", error: "" });
+    assert.equal(waiting.panel.hidden, false);
+    assert.equal(waiting.button.disabled, true);
+    assert.match(waiting.message.innerHTML, /href="https:\/\/accounts\.google\.com\/o\/oauth2\/auth\?a=1&amp;b=2"/);
+
+    const failed = renderer.renderAuth(data, { status: "failed", url: "", error: "gcloud command not found." });
+    assert.equal(failed.button.disabled, false);
+    assert.equal(failed.message.className, "status error");
+    assert.match(failed.message.textContent, /gcloud command not found/);
+
+    assert.equal(renderer.renderAuth(data, { status: "succeeded", url: "", error: "" }).panel.hidden, true);
 });
 
 test("status identifies full and partial cached results without changing the fetch time", () => {

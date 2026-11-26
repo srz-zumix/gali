@@ -10,6 +10,27 @@ brew install srz-zumix/tap/gali
 
 ## SetUp
 
+gali signs in through the [Google Cloud CLI](https://cloud.google.com/sdk/docs/install)
+(`brew install --cask google-cloud-sdk`). Sign in in the browser with:
+
+```sh
+gali auth login
+gali auth status   # shows the signed-in account
+```
+
+`gali auth login` runs `gcloud auth application-default login` with the scopes gali needs.
+Options:
+
+- `--quota-project <project-id>`: the Google Cloud project used for API quota. When omitted,
+  the quota project of the previous login is kept.
+- `--groups`: also allow reading Google Workspace groups (needed by `check-visibility --group`).
+  The choice is remembered for later logins; use `--groups=false` to drop it.
+
+Run `gali auth login` again when commands fail with `invalid_grant` or `invalid_rapt`.
+
+<details>
+<summary>Manual setup with gcloud</summary>
+
 ```sh
 gcloud auth application-default login --scopes="https://www.googleapis.com/auth/cloud-platform,https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/admin.directory.resource.calendar.readonly"
 ```
@@ -23,6 +44,41 @@ gcloud auth application-default login --scopes="https://www.googleapis.com/auth/
 ```sh
 gcloud auth application-default set-quota-project <your-quota-project>
 ```
+
+</details>
+
+### かんたんセットアップ（エンジニアでない方向け）
+
+1. **ターミナルを開く**: Mac では Spotlight（⌘ + スペース）で「ターミナル」と入力して開きます。
+2. **Homebrew を用意する**: `brew --version` と入力して Enter を押し、バージョンが表示されなければ
+   [Homebrew のサイト](https://brew.sh/ja/) の手順でインストールします。
+3. **gali と Google Cloud CLI をインストールする**: 次の 2 行を 1 行ずつ貼り付けて Enter を押します。
+
+   ```sh
+   brew install srz-zumix/tap/gali
+   brew install --cask google-cloud-sdk
+   ```
+
+4. **Google にログインする**: 次を実行するとブラウザが開きます。会社の Google アカウントを選び、
+   「許可」を押してください。ブラウザに「認証が完了しました」と表示されたら閉じて構いません。
+
+   ```sh
+   gali auth login
+   ```
+
+   管理者から Google Cloud のプロジェクト ID を案内されている場合は、
+   `gali auth login --quota-project <プロジェクト ID>` のように指定します（次回からは不要です）。
+
+5. **確認する**: `gali auth status` を実行し、`Logged in as <あなたのメールアドレス>` と表示されれば完了です。
+
+Copilot のキャンバスから使う場合は、ログインが必要なときに「Google にログイン」ボタンが表示されます。
+押すとブラウザが開くので、同じようにアカウントを選んで「許可」を押してください（Google Cloud CLI のインストールは必要です）。
+
+| 表示されたメッセージ | 対処 |
+| --- | --- |
+| `gcloud command not found` | 手順 3 の `brew install --cask google-cloud-sdk` を実行してから、ターミナルを開き直してください |
+| `invalid_grant` / `invalid_rapt` / `could not find default credentials` | ログインの期限切れまたは未ログインです。`gali auth login` をもう一度実行してください |
+| `quota project` / `has not been used in project` | 管理者にプロジェクト ID を確認し、`gali auth login --quota-project <プロジェクト ID>` を実行してください |
 
 ## Check calendar visibility
 
@@ -43,7 +99,7 @@ can be repeated. Group membership is read recursively through the Cloud Identity
 which must be enabled and accessible to the authenticated account. Group checks use a separate
 OAuth token cache and may authenticate as a different Google account than individual-only
 checks. When using OAuth credentials, authorize the requested scopes when prompted; with ADC,
-re-authenticate with the Cloud Identity Groups read-only scope as shown above.
+re-authenticate with `gali auth login --groups`.
 
 The email supplied is used as the calendar ID. Google says a primary calendar ID usually matches
 the user's primary email, but this is not guaranteed; aliases and account identity are not
