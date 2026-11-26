@@ -42,6 +42,12 @@ func GcloudConfigDir() (string, error) {
 	if dir := os.Getenv("CLOUDSDK_CONFIG"); dir != "" {
 		return dir, nil
 	}
+	return defaultGcloudConfigDir()
+}
+
+// defaultGcloudConfigDir is the directory gcloud uses without CLOUDSDK_CONFIG,
+// which is also the only place Go's ADC lookup reads credentials from.
+func defaultGcloudConfigDir() (string, error) {
 	if runtime.GOOS == "windows" {
 		if appData := os.Getenv("APPDATA"); appData != "" {
 			return filepath.Join(appData, "gcloud"), nil
@@ -156,6 +162,17 @@ type LoginOptions struct {
 func Login(opts LoginOptions) error {
 	if path := os.Getenv("GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
 		return fmt.Errorf("GOOGLE_APPLICATION_CREDENTIALS is set to %s and takes precedence over the login; unset it to use `gali auth login`", path)
+	}
+	// golang.org/x/oauth2's ADC lookup ignores CLOUDSDK_CONFIG, so credentials
+	// written to a custom directory would never be used by gali.
+	if dir := os.Getenv("CLOUDSDK_CONFIG"); dir != "" {
+		def, err := defaultGcloudConfigDir()
+		if err != nil {
+			return err
+		}
+		if filepath.Clean(dir) != filepath.Clean(def) {
+			return fmt.Errorf("CLOUDSDK_CONFIG is set to %s, but gali only reads Application Default Credentials from %s; unset CLOUDSDK_CONFIG to use `gali auth login`", dir, def)
+		}
 	}
 	gcloud, err := exec.LookPath("gcloud")
 	if err != nil {

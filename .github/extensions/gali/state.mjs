@@ -8,7 +8,7 @@ import { randomUUID } from "node:crypto";
 
 import { GaliError, hasReferences } from "./gali.mjs";
 import { computeFreeSlots, dayBounds } from "./freebusy.mjs";
-import { fetchWeek, mergeEventChunks, pruneCache } from "./cache.mjs";
+import { clearAllCaches, fetchWeek, mergeEventChunks, pruneCache } from "./cache.mjs";
 import { holidayDatesFrom } from "./classify.mjs";
 import {
     analyzeBlockers,
@@ -878,6 +878,22 @@ presetStore.subscribe(() => {
         if (state.settings) state.publish();
     }
 });
+
+/**
+ * Forget everything fetched with the previous credentials after a sign-in:
+ * the event caches have no account identity in their keys, and scan results
+ * (events and access roles) were derived from them. Profiles with loaded
+ * settings are refreshed so open panels show the new account's data.
+ */
+export async function resetAfterAccountChange() {
+    await clearAllCaches();
+    const refreshes = [];
+    for (const state of profiles.values()) {
+        state.invalidateScan();
+        if (state.settings) refreshes.push(state.refresh({ force: true }).catch(() => {}));
+    }
+    await Promise.all(refreshes);
+}
 
 export async function getProfileState(profileName, overrides) {
     await presetStore.initialize();

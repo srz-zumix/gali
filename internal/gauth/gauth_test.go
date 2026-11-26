@@ -23,9 +23,10 @@ func fakeGcloud(t *testing.T) string {
 	}
 	t.Setenv("PATH", dir)
 	t.Setenv("GOOGLE_APPLICATION_CREDENTIALS", "")
-	t.Setenv("CLOUDSDK_CONFIG", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("CLOUDSDK_CONFIG", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
 	return logFile
 }
 
@@ -42,6 +43,9 @@ func writeADC(t *testing.T, quotaProject string) {
 	t.Helper()
 	path, err := ADCFile()
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		t.Fatal(err)
 	}
 	body := `{"type":"authorized_user","quota_project_id":"` + quotaProject + `"}`
@@ -118,5 +122,13 @@ func TestLoginWithoutGcloudExplainsInstall(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 	if err := Login(LoginOptions{}); err == nil || !strings.Contains(err.Error(), "google-cloud-sdk") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestLoginRejectsCustomCloudSDKConfig(t *testing.T) {
+	fakeGcloud(t)
+	t.Setenv("CLOUDSDK_CONFIG", t.TempDir())
+	if err := Login(LoginOptions{}); err == nil || !strings.Contains(err.Error(), "CLOUDSDK_CONFIG") {
+		t.Fatalf("err = %v, want CLOUDSDK_CONFIG error", err)
 	}
 }

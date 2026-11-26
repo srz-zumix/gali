@@ -253,7 +253,9 @@ export async function collectCalendar(calendarId, options) {
 }
 
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
-const AUTH_URL = /https:\/\/accounts\.google\.com\/[^\s"'<>]+/;
+// The trailing delimiter proves the URL is complete: pipe chunks can split it.
+const AUTH_URL = /https:\/\/accounts\.google\.com\/[^\s"'<>]+(?=[\s"'<>])/;
+const KILL_GRACE_MS = 5_000;
 
 let loginJob = null;
 
@@ -295,10 +297,11 @@ export function startLogin({ timeoutMs = LOGIN_TIMEOUT_MS } = {}) {
             const child = spawn(galiBin, ["auth", "login"], { stdio: ["ignore", "pipe", "pipe"], detached });
             let output = "";
             let timedOut = false;
-            const kill = () => {
+            let forceTimer = null;
+            const kill = (signal = "SIGTERM") => {
                 try {
-                    if (detached) process.kill(-child.pid, "SIGTERM");
-                    else child.kill();
+                    if (detached) process.kill(-child.pid, signal);
+                    else child.kill(signal);
                 } catch {
                     // Already exited.
                 }
@@ -312,11 +315,20 @@ export function startLogin({ timeoutMs = LOGIN_TIMEOUT_MS } = {}) {
             const timer = setTimeout(() => {
                 timedOut = true;
                 kill();
+                // A child that ignores SIGTERM must not block later sign-ins.
+                forceTimer = setTimeout(() => {
+                    kill("SIGKILL");
+                    finish("failed", "ログインが時間内に完了しなかったため中断しました。もう一度お試しください。");
+                    done();
+                }, KILL_GRACE_MS);
+                forceTimer.unref?.();
             }, timeoutMs);
-            process.once("exit", kill);
+            const onExit = () => kill();
+            process.once("exit", onExit);
             const done = () => {
                 clearTimeout(timer);
-                process.removeListener("exit", kill);
+                clearTimeout(forceTimer);
+                process.removeListener("exit", onExit);
                 resolve();
             };
             child.on("error", (error) => {

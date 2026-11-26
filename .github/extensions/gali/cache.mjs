@@ -228,6 +228,20 @@ const cache = createCalendarCache();
 export const fetchWeek = (...args) => cache.fetchWeek(...args);
 export const clearMemoryCache = () => cache.clearMemoryCache();
 
+/**
+ * Drop every cached event, in memory and on disk. Cache keys carry no account
+ * identity, so this must run whenever the signed-in Google account may change.
+ */
+export async function clearAllCaches() {
+    cache.clearMemoryCache();
+    try {
+        const entries = await readdir(CACHE_DIR);
+        await Promise.all(entries.map((name) => unlink(path.join(CACHE_DIR, name)).catch(() => {})));
+    } catch {
+        // No cache directory yet.
+    }
+}
+
 export async function pruneCache() {
     try {
         const entries = await readdir(CACHE_DIR);

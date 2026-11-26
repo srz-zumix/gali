@@ -12,7 +12,7 @@ import path from "node:path";
 
 import { listCalendars, GaliError, loginStatus, startLogin } from "./gali.mjs";
 import { PresetError, presetStore } from "./presets.mjs";
-import { CalendarMembersConflictError, CalendarOrderError, RecurringSearchError, getProfileState, shiftAnchor, todayISO } from "./state.mjs";
+import { CalendarMembersConflictError, CalendarOrderError, RecurringSearchError, getProfileState, resetAfterAccountChange, shiftAnchor, todayISO } from "./state.mjs";
 
 const UI_DIR = path.dirname(fileURLToPath(new URL("./ui/index.html", import.meta.url)));
 
@@ -215,7 +215,7 @@ async function handleRequest(req, res, { profile, instanceId, token, port, strea
         startLogin().then((result) => {
             if (result.status !== "succeeded") return;
             calendarCache = null;
-            state.refresh({ force: true }).catch(() => {});
+            resetAfterAccountChange().catch(() => {});
         });
         sendJson(res, 202, loginStatus());
         return;
